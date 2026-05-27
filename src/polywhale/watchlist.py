@@ -33,21 +33,23 @@ MARGIN_RANKED_SHARPS: list[str] = [
     "0xfbf3d501e88815464642d0e913f15379c3eeb218",  # VPenguin     6.0% margin
 ]
 
-# Polywhaler.com top 10 by their proprietary skill rating (win-rate weighted).
-# All tagged "Smart Whale" / "Unlikely Insider" by Polywhaler 2026-05-27.
-# These are different from MARGIN_RANKED_SHARPS - they bet less often but with
-# higher accuracy, which is what we actually want for copy-trading.
+# Polywhaler.com top sharps by win-rate weighted ranking.
+# All tagged "Smart Whale" / "Unlikely Insider" by Polywhaler. Filter: WR > 70%, big PnL.
+# Stats refreshed 2026-05-27 from screenshots. (DORMANT) = no trades in 14+ days,
+# so they won't fire signals; kept in the list in case they reactivate.
 POLYWHALER_SHARPS: list[str] = [
-    "0x2974bd0059e48f215c391882976e0f1b4c8c9c23",  # 65765757   94% wr, $120k profit, mod risk
-    "0xf284ad6d607f777f34bc643cea587c33a886b9f9",  # strike123  91% wr, $643k profit, mod risk
-    "0x73e35ce0b7e36ef3ce29ebd12b30b28007383239",  # ID4        96% wr, $2.48M profit, high risk
-    "0xeb6789ca6b1425ff908a69a2a5469c38532cd696",  # ExitLiquidty 84% wr, $303k profit, mod risk
-    "0x1e3b6822abfb39331b863eb729cdc251f607c850",  # saintQ     93% wr, $32k profit, low risk
-    "0xc6587b11a2209e46dfe3928b31c5514a8e33b784",  # Erasmus.   74% wr, $641k profit, high risk
-    "0x13414a77a4be48988851c73dfd824d0168e70853",  # PineBluff  84% wr, $309k profit, mod risk
-    "0x7f9e2d1df78614564a70becc7fa14aa9a6623a0e",  # nojnn      81% wr, $219k profit, mod risk
-    "0x63d43bbb87f85af03b8f2f9e2fad7b54334fa2f1",  # wokerjoesleeper 90% wr, $120k profit, high risk
-    "0x5d0f03cf1243a3e21262d6cf844795afd9fff0ad",  # EB99999    88% wr, $509k profit, mod risk
+    "0x2974bd0059e48f215c391882976e0f1b4c8c9c23",  # 65765757    94.0% wr, $93k PnL, mod risk
+    "0xf284ad6d607f777f34bc643cea587c33a886b9f9",  # strike123   92.2% wr, $935k PnL, mod risk
+    "0x73e35ce0b7e36ef3ce29ebd12b30b28007383239",  # ID4         97.1% wr, $2.58M PnL, high risk
+    "0xeb6789ca6b1425ff908a69a2a5469c38532cd696",  # ExitLiquidty 84.0% wr, $301k PnL  (DORMANT 27d)
+    "0x1e3b6822abfb39331b863eb729cdc251f607c850",  # saintQ      93.0% wr, $36k PnL, low risk
+    "0xc6587b11a2209e46dfe3928b31c5514a8e33b784",  # Erasmus.    74.5% wr, $496k PnL, high risk
+    "0x13414a77a4be48988851c73dfd824d0168e70853",  # PineBluff   84.1% wr, $389k PnL  (DORMANT 14d)
+    "0x7f9e2d1df78614564a70becc7fa14aa9a6623a0e",  # nojnn       76.8% wr, $253k PnL, mod risk
+    "0x63d43bbb87f85af03b8f2f9e2fad7b54334fa2f1",  # wokerjoesleeper 90% wr, $120k PnL, high risk
+    "0x5d0f03cf1243a3e21262d6cf844795afd9fff0ad",  # EB99999     88.0% wr, $440k PnL, mod risk
+    "0xde7be6d489bce070a959e0cb813128ae659b5f4b",  # wan123      72.2% wr, $805k PnL, high risk
+    "0x8c80d213c0cbad777d06ee3f58f6ca4bc03102c3",  # SecondWindCap 82.4% wr, $3.5M (DORMANT 19d)
 ]
 
 # Union of both ranking methods - what whale-watch and whale-signals use by default.
