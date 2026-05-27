@@ -1,0 +1,19 @@
+[Unit]
+Description=Polymarket copytrader - poly-paper-settle (daily P&L update)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/polymarket/app
+ExecStart=/opt/polymarket/venv/bin/polywhale poly-paper-settle
+StandardOutput=append:/opt/polymarket/logs/poly-paper-settle.log
+StandardError=append:/opt/polymarket/logs/poly-paper-settle.log
+TimeoutStartSec=15min
+
+MemoryMax=200M
+CPUQuota=50%
+
+NoNewPrivileges=true
+PrivateTmp=true

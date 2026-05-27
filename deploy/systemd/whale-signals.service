@@ -1,0 +1,19 @@
+[Unit]
+Description=Polymarket copytrader - whale-signals (diff + telegram alert)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/polymarket/app
+ExecStart=/opt/polymarket/venv/bin/polywhale whale-signals --default --alert
+StandardOutput=append:/opt/polymarket/logs/whale-signals.log
+StandardError=append:/opt/polymarket/logs/whale-signals.log
+TimeoutStartSec=5min
+
+MemoryMax=200M
+CPUQuota=50%
+
+NoNewPrivileges=true
+PrivateTmp=true

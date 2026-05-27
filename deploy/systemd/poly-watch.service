@@ -1,0 +1,21 @@
+[Unit]
+Description=Polymarket copytrader - poly-watch (book snapshot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/polymarket/app
+ExecStart=/opt/polymarket/venv/bin/polywhale poly-watch --default --iterations 1 --interval 1
+StandardOutput=append:/opt/polymarket/logs/poly-watch.log
+StandardError=append:/opt/polymarket/logs/poly-watch.log
+TimeoutStartSec=10min
+
+# Kernel-enforced caps so we can never starve trading
+MemoryMax=300M
+CPUQuota=50%
+
+# Tighter isolation
+NoNewPrivileges=true
+PrivateTmp=true

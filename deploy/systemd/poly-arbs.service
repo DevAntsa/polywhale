@@ -1,0 +1,21 @@
+[Unit]
+Description=Polymarket copytrader - poly-arbs (combinatorial arb scan)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/polymarket/app
+# Scans the top neg-risk event groups. Add/remove --event-slug flags as
+# events come and go. Run manually first to find current high-volume events.
+ExecStart=/opt/polymarket/app/deploy/poly_arbs_scan.sh
+StandardOutput=append:/opt/polymarket/logs/poly-arbs.log
+StandardError=append:/opt/polymarket/logs/poly-arbs.log
+TimeoutStartSec=5min
+
+MemoryMax=200M
+CPUQuota=50%
+
+NoNewPrivileges=true
+PrivateTmp=true

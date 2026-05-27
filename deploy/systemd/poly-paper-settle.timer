@@ -1,0 +1,10 @@
+[Unit]
+Description=Run poly-paper-settle daily at 23:00 UTC
+
+[Timer]
+OnCalendar=*-*-* 23:00:00
+AccuracySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,116 @@
+from pathlib import Path
+
+from polywhale.db import connect, run_migrations
+from polywhale.polymarket import WhalePosition
+from polywhale.whale_watch import snapshot_wallet, watch_wallets
+
+
+class _StubClient:
+    def __init__(self, positions: list[WhalePosition]) -> None:
+        self._positions = positions
+        self.calls = 0
+
+    def get_whale_positions(self, wallet: str, *, size_threshold: float = 10.0):
+        self.calls += 1
+        return [p for p in self._positions if p.wallet == wallet]
+
+
+def _pos(wallet: str, asset_id: str, title: str = "Test", size: float = 100.0) -> WhalePosition:
+    return WhalePosition(
+        wallet=wallet,
+        asset_id=asset_id,
+        condition_id="0xcond",
+        market_slug="m",
+        event_slug="e",
+        title=title,
+        outcome="Yes",
+        size=size,
+        avg_price=0.5,
+        current_price=0.55,
+        current_value=size * 0.55,
+        initial_value=size * 0.5,
+        cash_pnl=size * 0.05,
+        realized_pnl=0,
+        percent_pnl=10.0,
+        end_date="2026-12-31",
+        neg_risk=False,
+    )
+
+
+def test_snapshot_wallet_persists_rows(tmp_path: Path) -> None:
+    db = tmp_path / "t.sqlite"
+    conn = connect(db)
+    try:
+        run_migrations(conn)
+        positions = [
+            _pos("0xwhale", "tok1", title="Match A", size=1000),
+            _pos("0xwhale", "tok2", title="Match B", size=500),
+        ]
+        client = _StubClient(positions)
+        count = snapshot_wallet(conn, client, "0xwhale")
+        assert count == 2
+        rows = list(
+            conn.execute(
+                "SELECT title, outcome, size, avg_price FROM whale_positions ORDER BY size DESC"
+            )
+        )
+        assert len(rows) == 2
+        assert rows[0]["title"] == "Match A"
+        assert rows[0]["size"] == 1000
+        assert rows[1]["title"] == "Match B"
+    finally:
+        conn.close()
+
+
+def test_snapshot_wallet_empty_when_no_positions(tmp_path: Path) -> None:
+    db = tmp_path / "t.sqlite"
+    conn = connect(db)
+    try:
+        run_migrations(conn)
+        client = _StubClient([])
+        count = snapshot_wallet(conn, client, "0xwhale")
+        assert count == 0
+        n = conn.execute("SELECT COUNT(*) FROM whale_positions").fetchone()[0]
+        assert n == 0
+    finally:
+        conn.close()
+
+
+def test_watch_wallets_iterates_each_wallet(tmp_path: Path) -> None:
+    db = tmp_path / "t.sqlite"
+    conn = connect(db)
+    try:
+        run_migrations(conn)
+        positions = [
+            _pos("0xw1", "tok1", title="W1 pos1"),
+            _pos("0xw2", "tok2", title="W2 pos1"),
+            _pos("0xw2", "tok3", title="W2 pos2"),
+        ]
+        client = _StubClient(positions)
+        total = watch_wallets(conn, client, ["0xw1", "0xw2"], interval_s=0, max_iterations=2)
+        # 2 iterations: w1 has 1 pos, w2 has 2 pos => 3 per iteration => 6 total
+        assert total == 6
+        n = conn.execute("SELECT COUNT(*) FROM whale_positions").fetchone()[0]
+        assert n == 6
+    finally:
+        conn.close()
+
+
+def test_watch_wallets_handles_per_wallet_error(tmp_path: Path) -> None:
+    db = tmp_path / "t.sqlite"
+    conn = connect(db)
+    try:
+        run_migrations(conn)
+
+        class _FlakyClient:
+            def get_whale_positions(self, wallet: str, *, size_threshold: float = 10.0):
+                if wallet == "0xbroken":
+                    raise RuntimeError("rate limit")
+                return [_pos(wallet, "tok1")]
+
+        client = _FlakyClient()
+        total = watch_wallets(conn, client, ["0xgood", "0xbroken"], interval_s=0, max_iterations=1)
+        # Only 0xgood contributes
+        assert total == 1
+    finally:
+        conn.close()
