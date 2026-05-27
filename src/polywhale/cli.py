@@ -32,6 +32,14 @@ from polywhale.polymarket import PolymarketClient
 from polywhale.whale_alerter import _wallet_labels, send_signal_alerts
 from polywhale.whale_classify import fetch_and_classify, persist_profiles, top_arb_ops, top_sharps
 from polywhale.whale_diff import detect_for_wallets, persist_signals
+from polywhale.whale_refresh import (
+    deactivate as watchlist_deactivate,
+)
+from polywhale.whale_refresh import (
+    load_active_watchlist,
+    refresh_watchlist,
+    upsert_manual,
+)
 from polywhale.whale_watch import prune_old_snapshots, snapshot_wallet, watch_wallets
 
 logger = logging.getLogger("polywhale")
@@ -519,19 +527,17 @@ def whale_watch_cmd(
     iterations: int,
 ) -> None:
     """Poll multiple whale wallets' open positions on an interval."""
-    from polywhale.watchlist import DEFAULT_WHALE_WALLETS
-
     resolved: tuple[str, ...] = wallets
-    if use_default and not wallets:
-        resolved = tuple(DEFAULT_WHALE_WALLETS)
-    elif use_default and wallets:
-        resolved = tuple(list(wallets) + DEFAULT_WHALE_WALLETS)
-    if not resolved:
-        click.echo("No wallets given. Use --wallet or --default.")
-        return
     conn = connect(settings.db_path)
     try:
         run_migrations(conn)
+        if use_default and not wallets:
+            resolved = tuple(load_active_watchlist(conn))
+        elif use_default and wallets:
+            resolved = tuple(list(wallets) + load_active_watchlist(conn))
+        if not resolved:
+            click.echo("No wallets given. Use --wallet or --default.")
+            return
         with PolymarketClient() as client:
             max_iter = None if iterations == 0 else iterations
             total = watch_wallets(
@@ -554,19 +560,17 @@ def whale_signals_cmd(
     alert: bool,
 ) -> None:
     """Diff the last two whale snapshots; emit new/added/closed/reduced signals."""
-    from polywhale.watchlist import DEFAULT_WHALE_WALLETS
-
     targets: tuple[str, ...] = wallets
-    if use_default:
-        targets = tuple(list(wallets) + DEFAULT_WHALE_WALLETS)
-    if not targets:
-        targets = tuple(DEFAULT_WHALE_WALLETS)
-    if not targets:
-        click.echo("No wallets.")
-        return
     conn = connect(settings.db_path)
     try:
         run_migrations(conn)
+        if use_default:
+            targets = tuple(list(wallets) + load_active_watchlist(conn))
+        if not targets:
+            targets = tuple(load_active_watchlist(conn))
+        if not targets:
+            click.echo("No wallets.")
+            return
         signals = detect_for_wallets(conn, targets)
         stored = persist_signals(conn, signals)
         click.echo(
@@ -617,19 +621,17 @@ def whale_fast_cmd(
     size_threshold: float,
 ) -> None:
     """One-shot snapshot + diff + alert for whale wallets. Designed for 60s timer cadence."""
-    from polywhale.watchlist import DEFAULT_WHALE_WALLETS
-
     targets: tuple[str, ...] = wallets
-    if use_default and not wallets:
-        targets = tuple(DEFAULT_WHALE_WALLETS)
-    elif use_default and wallets:
-        targets = tuple(list(wallets) + DEFAULT_WHALE_WALLETS)
-    if not targets:
-        click.echo("No wallets. Use --wallet or --default.")
-        return
     conn = connect(settings.db_path)
     try:
         run_migrations(conn)
+        if use_default and not wallets:
+            targets = tuple(load_active_watchlist(conn))
+        elif use_default and wallets:
+            targets = tuple(list(wallets) + load_active_watchlist(conn))
+        if not targets:
+            click.echo("No wallets. Use --wallet or --default.")
+            return
         with PolymarketClient() as client:
             snap_count = 0
             for wallet in targets:
@@ -656,6 +658,117 @@ def whale_fast_cmd(
                 )
                 if summary["sent"]:
                     click.echo(f"Telegram alert sent for {summary['signals']} signal(s).")
+    finally:
+        conn.close()
+
+
+@cli.command(name="whale-refresh")
+@click.option("--min-margin", type=float, default=3.0, show_default=True,
+              help="Minimum margin %% (profit/volume) to qualify as a sharp.")
+@click.option("--min-profit", type=float, default=50_000.0, show_default=True,
+              help="Minimum total profit (USD) to qualify.")
+@click.option("--min-volume", type=float, default=1_000_000.0, show_default=True,
+              help="Minimum volume (USD) to qualify (filters lucky small samples).")
+@click.option("--max-dormant-days", type=int, default=14, show_default=True,
+              help="Deactivate auto-discovered wallets with no activity in N days.")
+@click.option("--top", "top_n", type=int, default=100, show_default=True,
+              help="How deep to scan the leaderboard.")
+@click.pass_obj
+def whale_refresh_cmd(
+    settings: Settings,
+    min_margin: float,
+    min_profit: float,
+    min_volume: float,
+    max_dormant_days: int,
+    top_n: int,
+) -> None:
+    """Auto-discover new sharps from the leaderboard; deactivate dormant auto entries."""
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        with PolymarketClient() as client:
+            result = refresh_watchlist(
+                conn, client,
+                min_margin_pct=min_margin,
+                min_profit_usd=min_profit,
+                min_volume_usd=min_volume,
+                max_dormant_days=max_dormant_days,
+                top_n=top_n,
+            )
+        click.echo("whale-refresh:")
+        click.echo(f"  seeded (first run)       : {result.seeded}")
+        click.echo(f"  new auto-sharps added    : {result.added}")
+        click.echo(f"  existing entries updated : {result.updated}")
+        click.echo(f"  dormant auto deactivated : {result.deactivated}")
+        click.echo(f"  active watchlist total   : {result.active_total}")
+    finally:
+        conn.close()
+
+
+@cli.command(name="watchlist")
+@click.option("--all", "show_all", is_flag=True, default=False,
+              help="Include deactivated entries in output.")
+@click.pass_obj
+def watchlist_cmd(settings: Settings, show_all: bool) -> None:
+    """Print the current whale watchlist with stats."""
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        sql = (
+            "SELECT wallet, label, source, margin_pct, profit_usd, volume_usd, "
+            "active, deactivated_reason FROM whale_watchlist"
+        )
+        if not show_all:
+            sql += " WHERE active = 1"
+        sql += " ORDER BY active DESC, profit_usd DESC NULLS LAST"
+        rows = list(conn.execute(sql))
+        if not rows:
+            click.echo("Watchlist is empty. Run `polywhale whale-refresh` first.")
+            return
+        click.echo(f"{'wallet':<14} {'label':<22} {'src':<13} {'margin%':>8} "
+                   f"{'profit':>12} {'state':<10}")
+        for r in rows:
+            label = (r["label"] or "")[:22]
+            margin = f"{r['margin_pct']:.1f}" if r["margin_pct"] is not None else "-"
+            profit = f"${r['profit_usd']:,.0f}" if r["profit_usd"] is not None else "-"
+            state = "active" if r["active"] else (r["deactivated_reason"] or "inactive")
+            click.echo(
+                f"{r['wallet'][:14]:<14} {label:<22} {r['source']:<13} "
+                f"{margin:>8} {profit:>12} {state:<10}"
+            )
+    finally:
+        conn.close()
+
+
+@cli.command(name="watchlist-add")
+@click.option("--wallet", required=True)
+@click.option("--label", default=None, help="Optional pseudonym/note for this wallet.")
+@click.option("--notes", default=None)
+@click.pass_obj
+def watchlist_add_cmd(
+    settings: Settings, wallet: str, label: str | None, notes: str | None
+) -> None:
+    """Manually add (or re-activate) a wallet on the watchlist."""
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        ok = upsert_manual(conn, wallet=wallet, label=label, notes=notes)
+        click.echo(f"watchlist-add {wallet}: {'ok' if ok else 'no change'}")
+    finally:
+        conn.close()
+
+
+@cli.command(name="watchlist-remove")
+@click.option("--wallet", required=True)
+@click.option("--reason", default="manual", show_default=True)
+@click.pass_obj
+def watchlist_remove_cmd(settings: Settings, wallet: str, reason: str) -> None:
+    """Deactivate a wallet (does not delete; can be re-activated with watchlist-add)."""
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        ok = watchlist_deactivate(conn, wallet, reason=reason)
+        click.echo(f"watchlist-remove {wallet}: {'ok' if ok else 'not active'}")
     finally:
         conn.close()
 

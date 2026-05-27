@@ -1,0 +1,19 @@
+[Unit]
+Description=Polymarket copytrader - whale-refresh (auto-discover sharps + dormancy sweep)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/polymarket/app
+ExecStart=/opt/polymarket/venv/bin/polywhale whale-refresh
+StandardOutput=append:/opt/polymarket/logs/whale-refresh.log
+StandardError=append:/opt/polymarket/logs/whale-refresh.log
+TimeoutStartSec=5min
+
+MemoryMax=200M
+CPUQuota=50%
+
+NoNewPrivileges=true
+PrivateTmp=true

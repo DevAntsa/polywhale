@@ -10,7 +10,7 @@
 set -u
 
 POLY_UNITS=(poly-watch poly-arbs poly-paper-settle)
-WHALE_UNITS=(whale-watch whale-signals whale-fast)
+WHALE_UNITS=(whale-watch whale-signals whale-fast whale-refresh)
 
 echo ">>> Disabling poly + whale timers/services..."
 for unit in "${POLY_UNITS[@]}" "${WHALE_UNITS[@]}"; do
@@ -29,5 +29,5 @@ for svc in devantsa-loop devantsa-loop-acct2 devantsa-liq; do
 done
 echo ""
 echo "If any trading service is not 'active', this is independent of poly."
-echo "To re-enable poly (fast loop):"
-echo "    systemctl enable --now poly-watch.timer whale-fast.timer poly-arbs.timer poly-paper-settle.timer"
+echo "To re-enable poly (fast loop + weekly refresh):"
+echo "    systemctl enable --now poly-watch.timer whale-fast.timer whale-refresh.timer poly-arbs.timer poly-paper-settle.timer"

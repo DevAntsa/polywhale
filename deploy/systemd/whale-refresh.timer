@@ -1,0 +1,11 @@
+[Unit]
+Description=Run whale-refresh weekly (Sunday 03:00 UTC) to auto-discover new sharps
+
+[Timer]
+OnCalendar=Sun *-*-* 03:00:00
+AccuracySec=1min
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
