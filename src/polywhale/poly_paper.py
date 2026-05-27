@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 class PaperBetSummary:
     placed: int
     total_cost_usd: float
+    capacity_capped: bool = False
+
+
+# Yang et al. (arXiv 2605.00864) measured median executable combo-arb leg at
+# ~14.8 shares; depth_within(5%) overstates real fill so we leave a buffer.
+CAPACITY_BUFFER = 0.8
 
 
 def record_combo_arb_legs(
@@ -39,13 +45,20 @@ def record_combo_arb_legs(
 ) -> PaperBetSummary:
     """Record one paper bet per leg of a combo arb.
 
-    Sizing: buys N shares of each YES token where N is chosen so total cost equals
-    `total_stake_usd`. N = total_stake_usd / sum_best_ask. If a single outcome wins,
-    payout is N * $1 = N. Profit = N - total_stake_usd if sum_best_ask < 1.
+    Sizing: target `total_stake_usd / sum_best_ask` shares per leg, then cap by the
+    shallowest leg's observed ask depth so paper sizes can actually fill in production.
     """
     if not arb.legs or arb.sum_best_ask <= 0:
         return PaperBetSummary(0, 0.0)
-    shares_per_leg = total_stake_usd / arb.sum_best_ask
+    intended_shares = total_stake_usd / arb.sum_best_ask
+    depths = [leg.ask_depth for leg in arb.legs if leg.ask_depth and leg.ask_depth > 0]
+    min_depth = min(depths) if depths else None
+    if min_depth is not None and intended_shares > min_depth * CAPACITY_BUFFER:
+        shares_per_leg = min_depth * CAPACITY_BUFFER
+        capped = True
+    else:
+        shares_per_leg = intended_shares
+        capped = False
     ev_slug = event_slug or arb.event_slug
     now = int(time.time())
     placed = 0
@@ -58,8 +71,9 @@ def record_combo_arb_legs(
             """
             INSERT INTO poly_paper_bets (
                 source, source_ref_id, market_slug, event_slug, token_id,
-                side, outcome_title, entry_price, size_shares, cost_usd, placed_at
-            ) VALUES ('combo_arb', ?, ?, ?, ?, 'YES', ?, ?, ?, ?, ?)
+                side, outcome_title, entry_price, size_shares, cost_usd, placed_at,
+                intended_shares, capacity_capped
+            ) VALUES ('combo_arb', ?, ?, ?, ?, 'YES', ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 arb_id,
@@ -71,18 +85,21 @@ def record_combo_arb_legs(
                 round(shares_per_leg, 6),
                 round(cost, 4),
                 now,
+                round(intended_shares, 6),
+                1 if capped else 0,
             ),
         )
         placed += 1
         total_cost += cost
     conn.commit()
     logger.info(
-        "recorded combo_arb paper bets: %d legs, total cost $%.2f, arb_id=%s",
+        "recorded combo_arb paper bets: %d legs, cost $%.2f, capped=%s, arb_id=%s",
         placed,
         total_cost,
+        capped,
         arb_id,
     )
-    return PaperBetSummary(placed, round(total_cost, 2))
+    return PaperBetSummary(placed, round(total_cost, 2), capped)
 
 
 def record_single_leg(
@@ -128,15 +145,47 @@ def record_single_leg(
     return cur.lastrowid or 0
 
 
+def freeze_paper_bet(
+    conn: sqlite3.Connection, bet_id: int, *, reason: str
+) -> bool:
+    """Freeze a paper bet so settlement skips it (e.g., market is under UMA dispute).
+
+    Returns True if the row was updated. Idempotent — refreezing is a no-op.
+    """
+    now = int(time.time())
+    cur = conn.execute(
+        "UPDATE poly_paper_bets SET frozen_at = ?, frozen_reason = ? "
+        "WHERE bet_id = ? AND frozen_at IS NULL AND settled_at IS NULL",
+        (now, reason, bet_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def unfreeze_paper_bet(conn: sqlite3.Connection, bet_id: int) -> bool:
+    """Clear the frozen flag (e.g., UMA dispute resolved in favor of original outcome)."""
+    cur = conn.execute(
+        "UPDATE poly_paper_bets SET frozen_at = NULL, frozen_reason = NULL "
+        "WHERE bet_id = ? AND frozen_at IS NOT NULL",
+        (bet_id,),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def settle_paper_bets(conn: sqlite3.Connection, client: PolymarketClient) -> dict:
-    """For each unsettled paper bet, poll Gamma for the market's closed flag and
-    outcomePrices. Mark won/lost based on which outcome resolved to $1."""
+    """For each unsettled, unfrozen paper bet, poll Gamma for the market's closed flag
+    and outcomePrices. Mark won/lost based on which outcome resolved to $1."""
     rows = conn.execute(
         "SELECT bet_id, market_slug, token_id, side, entry_price, size_shares "
-        "FROM poly_paper_bets WHERE settled_at IS NULL"
+        "FROM poly_paper_bets WHERE settled_at IS NULL AND frozen_at IS NULL"
     ).fetchall()
     if not rows:
-        return {"checked": 0, "settled": 0, "still_open": 0}
+        frozen = conn.execute(
+            "SELECT COUNT(*) FROM poly_paper_bets "
+            "WHERE frozen_at IS NOT NULL AND settled_at IS NULL"
+        ).fetchone()[0]
+        return {"checked": 0, "settled": 0, "still_open": 0, "frozen": int(frozen or 0)}
 
     markets = {r["market_slug"] for r in rows}
     resolutions: dict[str, tuple[bool, list[float] | None]] = {}
@@ -170,10 +219,14 @@ def settle_paper_bets(conn: sqlite3.Connection, client: PolymarketClient) -> dic
         )
         settled += 1
     conn.commit()
+    frozen = conn.execute(
+        "SELECT COUNT(*) FROM poly_paper_bets WHERE frozen_at IS NOT NULL AND settled_at IS NULL"
+    ).fetchone()[0]
     summary = {
         "checked": len(markets),
         "settled": settled,
         "still_open": still_open,
+        "frozen": int(frozen or 0),
     }
     logger.info("settle_paper_bets: %s", json.dumps(summary))
     return summary

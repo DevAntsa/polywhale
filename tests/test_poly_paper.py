@@ -3,10 +3,12 @@ from pathlib import Path
 from polywhale.db import connect, run_migrations
 from polywhale.poly_arb import ComboArb, ComboLeg
 from polywhale.poly_paper import (
+    freeze_paper_bet,
     paper_pnl_summary,
     record_combo_arb_legs,
     record_single_leg,
     settle_paper_bets,
+    unfreeze_paper_bet,
 )
 from polywhale.polymarket import PolyMarket
 
@@ -138,7 +140,7 @@ def test_settle_paper_bets_yes_winner(tmp_path: Path) -> None:
         )
         client = _StubClient({"m1": _resolved_market("m1", yes_wins=True)})
         summary = settle_paper_bets(conn, client)
-        assert summary == {"checked": 1, "settled": 1, "still_open": 0}
+        assert summary == {"checked": 1, "settled": 1, "still_open": 0, "frozen": 0}
         row = conn.execute("SELECT * FROM poly_paper_bets WHERE bet_id = 1").fetchone()
         assert row["resolved_outcome"] == "won"
         # cost was 30, paid out 100 -> pnl = 70
@@ -217,6 +219,139 @@ def test_settle_paper_bets_still_open(tmp_path: Path) -> None:
         summary = settle_paper_bets(conn, client)
         assert summary["settled"] == 0
         assert summary["still_open"] == 1
+    finally:
+        conn.close()
+
+
+def _arb_with_depth(sum_ask: float, n_legs: int, depths: list[float]) -> ComboArb:
+    legs = []
+    per_ask = sum_ask / n_legs
+    for i in range(n_legs):
+        legs.append(
+            ComboLeg(
+                market_slug=f"m{i}",
+                question=None,
+                outcome_title=f"O{i}",
+                token_id=f"tok{i}",
+                best_ask=per_ask,
+                ask_depth=depths[i],
+            )
+        )
+    return ComboArb(
+        event_slug="ev",
+        event_title=None,
+        captured_at=12345,
+        outcomes_count=n_legs,
+        sum_best_ask=sum_ask,
+        edge_pct=(1 - sum_ask) * 100,
+        legs=legs,
+    )
+
+
+def test_combo_arb_capped_by_shallow_leg(tmp_path: Path) -> None:
+    """If a leg has shallow depth, all leg sizes are capped down to fit."""
+    db = tmp_path / "t.sqlite"
+    conn = connect(db)
+    try:
+        run_migrations(conn)
+        # 3 legs, sum_ask=0.90. Naive shares = 10000/0.9 ~= 11,111. Min depth = 50 -> cap to 40.
+        arb = _arb_with_depth(sum_ask=0.90, n_legs=3, depths=[1000.0, 50.0, 2000.0])
+        summary = record_combo_arb_legs(conn, arb, total_stake_usd=10_000.0)
+        assert summary.placed == 3
+        assert summary.capacity_capped is True
+        rows = list(conn.execute("SELECT * FROM poly_paper_bets ORDER BY bet_id"))
+        for r in rows:
+            assert abs(r["size_shares"] - 40.0) < 1e-6
+            assert r["capacity_capped"] == 1
+            assert r["intended_shares"] > 11_000
+    finally:
+        conn.close()
+
+
+def test_combo_arb_uncapped_when_depth_sufficient(tmp_path: Path) -> None:
+    db = tmp_path / "t.sqlite"
+    conn = connect(db)
+    try:
+        run_migrations(conn)
+        arb = _arb_with_depth(sum_ask=0.90, n_legs=3, depths=[1000.0, 1000.0, 1000.0])
+        summary = record_combo_arb_legs(conn, arb, total_stake_usd=90.0)
+        assert summary.capacity_capped is False
+        rows = list(conn.execute("SELECT * FROM poly_paper_bets ORDER BY bet_id"))
+        for r in rows:
+            assert r["capacity_capped"] == 0
+    finally:
+        conn.close()
+
+
+def test_freeze_excludes_bet_from_settlement(tmp_path: Path) -> None:
+    db = tmp_path / "t.sqlite"
+    conn = connect(db)
+    try:
+        run_migrations(conn)
+        bet_id = record_single_leg(
+            conn,
+            market_slug="m1",
+            event_slug=None,
+            token_id="tok1",
+            side="YES",
+            outcome_title="A",
+            entry_price=0.30,
+            size_shares=100.0,
+        )
+        assert freeze_paper_bet(conn, bet_id, reason="UMA dispute test")
+        client = _StubClient({"m1": _resolved_market("m1", yes_wins=True)})
+        summary = settle_paper_bets(conn, client)
+        assert summary["settled"] == 0
+        assert summary["frozen"] == 1
+        row = conn.execute("SELECT * FROM poly_paper_bets WHERE bet_id = ?", (bet_id,)).fetchone()
+        assert row["settled_at"] is None
+        assert row["frozen_reason"] == "UMA dispute test"
+    finally:
+        conn.close()
+
+
+def test_unfreeze_allows_settlement(tmp_path: Path) -> None:
+    db = tmp_path / "t.sqlite"
+    conn = connect(db)
+    try:
+        run_migrations(conn)
+        bet_id = record_single_leg(
+            conn,
+            market_slug="m1",
+            event_slug=None,
+            token_id="tok1",
+            side="YES",
+            outcome_title="A",
+            entry_price=0.30,
+            size_shares=100.0,
+        )
+        freeze_paper_bet(conn, bet_id, reason="dispute")
+        assert unfreeze_paper_bet(conn, bet_id)
+        client = _StubClient({"m1": _resolved_market("m1", yes_wins=True)})
+        summary = settle_paper_bets(conn, client)
+        assert summary["settled"] == 1
+        assert summary["frozen"] == 0
+    finally:
+        conn.close()
+
+
+def test_freeze_idempotent(tmp_path: Path) -> None:
+    db = tmp_path / "t.sqlite"
+    conn = connect(db)
+    try:
+        run_migrations(conn)
+        bet_id = record_single_leg(
+            conn,
+            market_slug="m1",
+            event_slug=None,
+            token_id="tok1",
+            side="YES",
+            outcome_title="A",
+            entry_price=0.30,
+            size_shares=100.0,
+        )
+        assert freeze_paper_bet(conn, bet_id, reason="r1")
+        assert not freeze_paper_bet(conn, bet_id, reason="r2")
     finally:
         conn.close()
 

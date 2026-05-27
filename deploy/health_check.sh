@@ -6,7 +6,7 @@ set -u
 
 POLY_ROOT="/opt/polymarket"
 LOGS_DIR="${POLY_ROOT}/logs"
-UNITS=(poly-watch whale-watch whale-signals poly-arbs poly-paper-settle)
+UNITS=(poly-watch whale-fast poly-arbs poly-paper-settle)
 FAIL=0
 
 echo "============================================================"
@@ -52,11 +52,13 @@ for unit in "${UNITS[@]}"; do
     fi
     last_mtime=$(stat -c %Y "$log_file")
     age=$((NOW - last_mtime))
-    # poly-paper-settle is daily; allow 25h for it
+    # Thresholds match each timer's cadence with slack.
     if [ "$unit" = "poly-paper-settle" ]; then
-        threshold=90000  # 25h
+        threshold=90000  # daily timer, allow 25h
+    elif [ "$unit" = "whale-fast" ]; then
+        threshold=300    # 60s cadence, allow 5min
     else
-        threshold=7200   # 2h
+        threshold=7200   # 2h for poly-watch / poly-arbs
     fi
     if [ "$age" -lt "$threshold" ]; then
         printf "      OK   %-22s %ss old\n" "$unit" "$age"

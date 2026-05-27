@@ -38,6 +38,15 @@ class WhaleSignal:
     current_price: float | None
     prev_captured_at: int | None
     latest_captured_at: int
+    recent_move_pct: float | None = None
+    conviction_discount: float | None = None
+
+
+# McDonald, Tsang, Johnson, Galanis (2019) found prediction markets overreact
+# to recent price moves. We fade signals that the market already chased.
+OVERREACTION_LOOKBACK_SEC = 24 * 60 * 60
+OVERREACTION_TRIGGER_PP = 0.05
+OVERREACTION_FLOOR = 0.5
 
 
 def _last_two_timestamps(conn: sqlite3.Connection, wallet: str) -> tuple[int, int] | None:
@@ -90,13 +99,21 @@ def detect_signals_for_wallet(
             continue
         prev_row = prev.get(asset_id)
         if prev_row is None:
-            signals.append(_signal(SIG_NEW, row, None, size, prev_ts, latest_ts))
+            signals.append(
+                _signal_with_overreaction(
+                    conn, SIG_NEW, row, None, size, prev_ts, latest_ts
+                )
+            )
             continue
         old_size = float(prev_row["size"] or 0)
         if old_size <= 0:
             continue
         if size >= old_size * add_threshold:
-            signals.append(_signal(SIG_ADDED, row, old_size, size, prev_ts, latest_ts))
+            signals.append(
+                _signal_with_overreaction(
+                    conn, SIG_ADDED, row, old_size, size, prev_ts, latest_ts
+                )
+            )
 
     for asset_id, prev_row in prev.items():
         old_size = float(prev_row["size"] or 0)
@@ -111,6 +128,86 @@ def detect_signals_for_wallet(
                 _signal(SIG_REDUCED, latest[asset_id], old_size, new_size, prev_ts, latest_ts)
             )
     return signals
+
+
+def recent_price_move(
+    conn: sqlite3.Connection,
+    asset_id: str,
+    since_ts: int,
+) -> float | None:
+    """Return last_price - first_price over polymarket_books for `asset_id` since `since_ts`.
+
+    None if we have <2 snapshots in the window. The book table is keyed on token_id,
+    which Polymarket uses interchangeably with asset_id.
+    """
+    rows = conn.execute(
+        """
+        SELECT best_ask, captured_at FROM polymarket_books
+        WHERE token_id = ? AND captured_at >= ?
+        ORDER BY captured_at ASC
+        """,
+        (asset_id, since_ts),
+    ).fetchall()
+    if len(rows) < 2:
+        return None
+    first_price = rows[0]["best_ask"]
+    last_price = rows[-1]["best_ask"]
+    if first_price is None or last_price is None:
+        return None
+    return float(last_price) - float(first_price)
+
+
+def conviction_discount_from_move(
+    move: float | None,
+    *,
+    current_price: float | None,
+) -> float:
+    """Map a 24h price move to a 0.5-1.0 conviction discount factor.
+
+    A whale buying when the market has already moved >5pp in their direction is
+    likely chasing. Discount to 0.5 at >=10pp move; linear in between.
+    """
+    if move is None:
+        return 1.0
+    if current_price is None:
+        return 1.0
+    pp_move = abs(move)
+    if pp_move < OVERREACTION_TRIGGER_PP:
+        return 1.0
+    span = OVERREACTION_TRIGGER_PP
+    excess = min(pp_move - OVERREACTION_TRIGGER_PP, span)
+    return 1.0 - (1.0 - OVERREACTION_FLOOR) * (excess / span)
+
+
+def _signal_with_overreaction(
+    conn: sqlite3.Connection,
+    signal_type: str,
+    row: sqlite3.Row,
+    old_size: float | None,
+    new_size: float,
+    prev_ts: int,
+    latest_ts: int,
+) -> WhaleSignal:
+    asset_id = row["asset_id"]
+    since_ts = latest_ts - OVERREACTION_LOOKBACK_SEC
+    move = recent_price_move(conn, asset_id, since_ts) if asset_id else None
+    current_price = row["current_price"] if "current_price" in row.keys() else None
+    discount = conviction_discount_from_move(move, current_price=current_price)
+    return WhaleSignal(
+        wallet=row["wallet"],
+        signal_type=signal_type,
+        asset_id=asset_id,
+        market_slug=row["market_slug"],
+        title=row["title"],
+        outcome=row["outcome"],
+        old_size=old_size,
+        new_size=new_size,
+        current_price=current_price,
+        prev_captured_at=prev_ts,
+        latest_captured_at=latest_ts,
+        recent_move_pct=move,
+        conviction_discount=discount,
+    )
 
 
 def detect_for_wallets(
@@ -157,6 +254,8 @@ def persist_signals(conn: sqlite3.Connection, signals: list[WhaleSignal]) -> int
                 s.prev_captured_at,
                 s.latest_captured_at,
                 now,
+                s.recent_move_pct,
+                s.conviction_discount,
             )
         )
     if not rows_to_insert:
@@ -166,8 +265,8 @@ def persist_signals(conn: sqlite3.Connection, signals: list[WhaleSignal]) -> int
         INSERT INTO whale_signals (
             wallet, signal_type, asset_id, market_slug, title, outcome,
             old_size, new_size, current_price, prev_captured_at,
-            latest_captured_at, detected_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            latest_captured_at, detected_at, recent_move_pct, conviction_discount
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows_to_insert,
     )

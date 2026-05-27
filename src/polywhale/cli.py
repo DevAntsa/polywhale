@@ -14,17 +14,19 @@ from polywhale.db import connect, run_migrations
 from polywhale.logging_setup import configure as configure_logging
 from polywhale.poly_arb import detect_combo_arb, inspect_event, persist_combo_arb
 from polywhale.poly_paper import (
+    freeze_paper_bet,
     paper_pnl_summary,
     record_combo_arb_legs,
     record_single_leg,
     settle_paper_bets,
+    unfreeze_paper_bet,
 )
 from polywhale.poly_watch import WatchTarget, watch_loop
 from polywhale.polymarket import PolymarketClient
 from polywhale.whale_alerter import send_signal_alerts
 from polywhale.whale_classify import fetch_and_classify, persist_profiles, top_arb_ops, top_sharps
 from polywhale.whale_diff import detect_for_wallets, persist_signals
-from polywhale.whale_watch import snapshot_wallet, watch_wallets
+from polywhale.whale_watch import prune_old_snapshots, snapshot_wallet, watch_wallets
 
 logger = logging.getLogger("polywhale")
 
@@ -320,9 +322,16 @@ def poly_paper_bet(settings: Settings, slug: str, side: str, shares: float) -> N
 
 
 @cli.command(name="poly-paper-settle")
+@click.option(
+    "--prune-days",
+    type=int,
+    default=30,
+    show_default=True,
+    help="Also prune whale_positions and polymarket_books older than N days. 0 disables.",
+)
 @click.pass_obj
-def poly_paper_settle(settings: Settings) -> None:
-    """Check Gamma for resolution of open paper bets; mark P&L on settled ones."""
+def poly_paper_settle(settings: Settings, prune_days: int) -> None:
+    """Settle resolved paper bets and prune old snapshots (daily housekeeping)."""
     conn = connect(settings.db_path)
     try:
         run_migrations(conn)
@@ -330,10 +339,56 @@ def poly_paper_settle(settings: Settings) -> None:
             summary = settle_paper_bets(conn, client)
         click.echo(
             f"Checked {summary['checked']} market(s). "
-            f"Settled {summary['settled']}. Still open: {summary['still_open']}."
+            f"Settled {summary['settled']}. Still open: {summary['still_open']}. "
+            f"Frozen: {summary.get('frozen', 0)}."
         )
+        if prune_days > 0:
+            pruned = prune_old_snapshots(conn, days=prune_days)
+            click.echo(
+                f"Pruned (>{prune_days}d): whale_positions={pruned['whale_positions']}, "
+                f"polymarket_books={pruned['polymarket_books']}"
+            )
     finally:
         conn.close()
+
+
+@cli.command(name="poly-paper-freeze")
+@click.option("--bet-id", type=int, required=True)
+@click.option(
+    "--reason",
+    required=True,
+    help="Why the bet is frozen (e.g., 'UMA dispute on market X').",
+)
+@click.pass_obj
+def poly_paper_freeze(settings: Settings, bet_id: int, reason: str) -> None:
+    """Freeze a paper bet so settlement skips it until unfrozen."""
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        ok = freeze_paper_bet(conn, bet_id, reason=reason)
+    finally:
+        conn.close()
+    if ok:
+        click.echo(f"Froze bet {bet_id}: {reason}")
+    else:
+        click.echo(f"Bet {bet_id} not frozen (already settled, missing, or already frozen).")
+
+
+@cli.command(name="poly-paper-unfreeze")
+@click.option("--bet-id", type=int, required=True)
+@click.pass_obj
+def poly_paper_unfreeze(settings: Settings, bet_id: int) -> None:
+    """Clear the frozen flag on a paper bet so settlement can resume."""
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        ok = unfreeze_paper_bet(conn, bet_id)
+    finally:
+        conn.close()
+    if ok:
+        click.echo(f"Unfroze bet {bet_id}.")
+    else:
+        click.echo(f"Bet {bet_id} was not frozen.")
 
 
 @cli.command(name="poly-paper-pulse")
@@ -542,6 +597,63 @@ def whale_signals_cmd(
         conn.close()
 
 
+@cli.command(name="whale-fast")
+@click.option("--wallet", "wallets", multiple=True)
+@click.option("--default", "use_default", is_flag=True, default=False)
+@click.option("--alert", is_flag=True, default=False, help="Push Telegram alert for new signals.")
+@click.option("--size-threshold", type=float, default=10.0, show_default=True)
+@click.pass_obj
+def whale_fast_cmd(
+    settings: Settings,
+    wallets: tuple[str, ...],
+    use_default: bool,
+    alert: bool,
+    size_threshold: float,
+) -> None:
+    """One-shot snapshot + diff + alert for whale wallets. Designed for 60s timer cadence."""
+    from polywhale.watchlist import DEFAULT_WHALE_WALLETS
+
+    targets: tuple[str, ...] = wallets
+    if use_default and not wallets:
+        targets = tuple(DEFAULT_WHALE_WALLETS)
+    elif use_default and wallets:
+        targets = tuple(list(wallets) + DEFAULT_WHALE_WALLETS)
+    if not targets:
+        click.echo("No wallets. Use --wallet or --default.")
+        return
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        with PolymarketClient() as client:
+            snap_count = 0
+            for wallet in targets:
+                try:
+                    snap_count += snapshot_wallet(
+                        conn, client, wallet, size_threshold=size_threshold
+                    )
+                except Exception as exc:
+                    logger.warning("snapshot failed for %s: %s", wallet, exc)
+        signals = detect_for_wallets(conn, targets)
+        stored = persist_signals(conn, signals)
+        click.echo(
+            f"whale-fast: wallets={len(targets)} positions={snap_count} "
+            f"signals_detected={len(signals)} stored={stored}"
+        )
+        if alert and stored > 0:
+            if not settings.telegram_bot_token or not settings.telegram_chat_id:
+                click.echo("[alert skipped: Telegram not configured]")
+            else:
+                summary = send_signal_alerts(
+                    conn,
+                    token=settings.telegram_bot_token,
+                    chat_id=settings.telegram_chat_id,
+                )
+                if summary["sent"]:
+                    click.echo(f"Telegram alert sent for {summary['signals']} signal(s).")
+    finally:
+        conn.close()
+
+
 # ----- Pulse (overall status) -----
 
 
@@ -566,10 +678,17 @@ def pulse(settings: Settings) -> None:
         click.echo(f"  combo arbs detected  : {_scalar('SELECT COUNT(*) FROM combo_arbs')}")
         paper_total = _scalar("SELECT COUNT(*) FROM poly_paper_bets")
         paper_settled = _scalar("SELECT COUNT(*) FROM poly_paper_bets WHERE settled_at IS NOT NULL")
+        paper_frozen = _scalar(
+            "SELECT COUNT(*) FROM poly_paper_bets "
+            "WHERE frozen_at IS NOT NULL AND settled_at IS NULL"
+        )
         paper_pnl = conn.execute(
             "SELECT COALESCE(SUM(pnl_usd), 0) FROM poly_paper_bets"
         ).fetchone()[0]
-        click.echo(f"  paper bets total     : {paper_total}  (settled: {paper_settled})")
+        click.echo(
+            f"  paper bets total     : {paper_total}  "
+            f"(settled: {paper_settled}, frozen: {paper_frozen})"
+        )
         click.echo(f"  paper P&L            : ${paper_pnl:+.2f}")
     finally:
         conn.close()

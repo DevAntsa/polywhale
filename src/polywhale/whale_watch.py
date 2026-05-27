@@ -24,12 +24,21 @@ def snapshot_wallet(
     *,
     size_threshold: float = 10.0,
 ) -> int:
-    """Pull a wallet's open positions and persist them. Returns count stored."""
+    """Pull a wallet's open positions and persist them IF they differ from the latest stored
+    snapshot. Returns count stored (0 means unchanged or empty).
+
+    Change-only semantics keep disk growth bounded at 60s polling cadence.
+    Limitation: a whale going from having positions to zero positions is not recorded;
+    we'll miss the corresponding 'closed_position' signal in that rare case.
+    """
     positions = client.get_whale_positions(wallet, size_threshold=size_threshold)
-    now = int(time.time())
     if not positions:
-        logger.info("snapshot_wallet(%s): no positions above threshold", wallet)
+        logger.debug("snapshot_wallet(%s): no positions above threshold", wallet)
         return 0
+    new_set = {(p.asset_id, round(float(p.size or 0), 6)) for p in positions}
+    if not _positions_changed(conn, wallet, new_set):
+        return 0
+    now = int(time.time())
     rows = [_to_row(p, now) for p in positions]
     conn.executemany(
         """
@@ -43,8 +52,45 @@ def snapshot_wallet(
         rows,
     )
     conn.commit()
-    logger.info("snapshot_wallet(%s): stored %d positions", wallet, len(rows))
+    logger.info("snapshot_wallet(%s): stored %d positions (changed)", wallet, len(rows))
     return len(rows)
+
+
+def _positions_changed(
+    conn: sqlite3.Connection,
+    wallet: str,
+    new_set: set[tuple[str, float]],
+) -> bool:
+    row = conn.execute(
+        "SELECT MAX(captured_at) FROM whale_positions WHERE wallet = ?",
+        (wallet,),
+    ).fetchone()
+    if not row or row[0] is None:
+        return True
+    latest_ts = int(row[0])
+    prev_rows = conn.execute(
+        "SELECT asset_id, size FROM whale_positions WHERE wallet = ? AND captured_at = ?",
+        (wallet, latest_ts),
+    ).fetchall()
+    prev_set = {(r["asset_id"], round(float(r["size"] or 0), 6)) for r in prev_rows}
+    return prev_set != new_set
+
+
+def prune_old_snapshots(conn: sqlite3.Connection, *, days: int = 30) -> dict:
+    """Delete whale_positions and polymarket_books rows older than `days`.
+
+    Run daily to bound disk usage at high polling cadence.
+    """
+    cutoff = int(time.time()) - days * 24 * 60 * 60
+    wp = conn.execute(
+        "DELETE FROM whale_positions WHERE captured_at < ?", (cutoff,)
+    ).rowcount
+    pb = conn.execute(
+        "DELETE FROM polymarket_books WHERE captured_at < ?", (cutoff,)
+    ).rowcount
+    conn.commit()
+    logger.info("prune_old_snapshots(days=%d): deleted %d positions, %d books", days, wp, pb)
+    return {"whale_positions": int(wp or 0), "polymarket_books": int(pb or 0), "days": days}
 
 
 def watch_wallets(

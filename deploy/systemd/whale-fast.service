@@ -1,0 +1,19 @@
+[Unit]
+Description=Polymarket copytrader - whale-fast (snapshot + diff + telegram alert)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/polymarket/app
+ExecStart=/opt/polymarket/venv/bin/polywhale whale-fast --default --alert
+StandardOutput=append:/opt/polymarket/logs/whale-fast.log
+StandardError=append:/opt/polymarket/logs/whale-fast.log
+TimeoutStartSec=2min
+
+MemoryMax=300M
+CPUQuota=50%
+
+NoNewPrivileges=true
+PrivateTmp=true

@@ -94,8 +94,12 @@ systemctl daemon-reload
 
 Bring up sequentially, verifying trading stays healthy between each.
 
+`whale-fast` (60s cadence) supersedes `whale-watch` (30 min) + `whale-signals` (90 min) — it does
+snapshot + diff + Telegram alert in one tight pass so we copy whales before other bots front-run us.
+On a fresh deploy, enable `whale-fast` only; leave the slow pair disabled.
+
 ```bash
-for unit in poly-watch whale-watch whale-signals poly-arbs poly-paper-settle; do
+for unit in poly-watch whale-fast poly-arbs poly-paper-settle; do
   echo "=== Enabling $unit.timer ==="
   systemctl enable --now $unit.timer
   sleep 30
@@ -108,6 +112,13 @@ for unit in poly-watch whale-watch whale-signals poly-arbs poly-paper-settle; do
 done
 ```
 
+If migrating an existing deploy that already has `whale-watch.timer` + `whale-signals.timer` armed:
+
+```bash
+systemctl disable --now whale-watch.timer whale-signals.timer
+systemctl enable --now whale-fast.timer
+```
+
 ## Phase 4 — Health audit
 
 ```bash
@@ -117,8 +128,8 @@ cp /opt/polymarket/app/deploy/health_check.sh /opt/polymarket/
 ```
 
 Output should show:
-- All 5 timers `enabled` and scheduled
-- Log files <2h old
+- All 4 active timers `enabled` and scheduled (`poly-watch`, `whale-fast`, `poly-arbs`, `poly-paper-settle`)
+- Log files fresh (whale-fast in particular should be <2 min old)
 - No `ERROR` or `Traceback` lines in last 100 of any log
 
 ## Phase 5 — Verify rollback works
@@ -133,7 +144,7 @@ chmod +x /opt/polymarket/disable_all.sh
 systemctl is-active devantsa-loop devantsa-loop-acct2 devantsa-liq
 
 # Re-enable manually (confirms re-enable path works):
-systemctl enable --now poly-watch.timer whale-watch.timer whale-signals.timer poly-arbs.timer poly-paper-settle.timer
+systemctl enable --now poly-watch.timer whale-fast.timer poly-arbs.timer poly-paper-settle.timer
 ```
 
 Deploy complete. The bot now runs unattended.

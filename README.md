@@ -133,9 +133,12 @@ Single-file SQLite, `httpx` for sync I/O, `click` for CLI. No queues, no Kafka, 
 | `polywhale whale-snapshot --wallet X` | Pull a wallet's current open positions |
 | `polywhale whale-watch --default` | Poll multiple wallets on an interval |
 | `polywhale whale-signals --default --alert` | Diff snapshots and push Telegram alerts on new sharp positions |
+| `polywhale whale-fast --default --alert` | Snapshot + diff + alert in one fast pass (60s timer cadence) |
 | `polywhale poly-paper-combo --event-slug X` | Paper-bet a combo arb at current ask prices |
 | `polywhale poly-paper-bet --slug X --side YES --shares N` | Manual directional paper bet |
 | `polywhale poly-paper-settle` | Settle resolved paper bets via gamma + compute P&L |
+| `polywhale poly-paper-freeze --bet-id N --reason "..."` | Freeze a paper bet (e.g., during UMA dispute) so settlement skips it |
+| `polywhale poly-paper-unfreeze --bet-id N` | Clear the frozen flag |
 | `polywhale poly-paper-pulse` | Per-source P&L breakdown |
 | `polywhale pulse` | At-a-glance status snapshot |
 
@@ -177,13 +180,12 @@ polywhale pulse
 - **`health_check.sh`** - 4-stage audit (services, timer schedules, log freshness, error scan)
 - **`README.md`** - phased deploy guide with verify-gates after each step
 
-Five timers handle the workload:
+Four timers handle the workload:
 
 | Timer | Cadence | What it does |
 |---|---|---|
+| `whale-fast` | 60 s | Whale snapshot + diff + Telegram alert (low-latency copy signal) |
 | `poly-watch` | 30 min | Order-book depth snapshots |
-| `whale-watch` | 30 min | Whale position snapshots |
-| `whale-signals` | 90 min | Diff snapshots + Telegram alert |
 | `poly-arbs` | 10 min | Combinatorial arb scan |
 | `poly-paper-settle` | daily 23:00 UTC | Settle resolved paper bets |
 

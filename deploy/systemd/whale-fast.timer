@@ -1,0 +1,12 @@
+[Unit]
+Description=Run whale-fast every 60 seconds (snapshot + diff + alert in one pass)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60s
+AccuracySec=5s
+RandomizedDelaySec=5s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

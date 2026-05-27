@@ -2,7 +2,11 @@ from pathlib import Path
 
 from polywhale.db import connect, run_migrations
 from polywhale.polymarket import WhalePosition
-from polywhale.whale_watch import snapshot_wallet, watch_wallets
+from polywhale.whale_watch import (
+    prune_old_snapshots,
+    snapshot_wallet,
+    watch_wallets,
+)
 
 
 class _StubClient:
@@ -88,10 +92,75 @@ def test_watch_wallets_iterates_each_wallet(tmp_path: Path) -> None:
         ]
         client = _StubClient(positions)
         total = watch_wallets(conn, client, ["0xw1", "0xw2"], interval_s=0, max_iterations=2)
-        # 2 iterations: w1 has 1 pos, w2 has 2 pos => 3 per iteration => 6 total
-        assert total == 6
+        # 2 iterations: first writes 3 rows, second is unchanged and writes 0 (change-only insert).
+        assert total == 3
         n = conn.execute("SELECT COUNT(*) FROM whale_positions").fetchone()[0]
-        assert n == 6
+        assert n == 3
+    finally:
+        conn.close()
+
+
+def test_snapshot_wallet_skips_when_unchanged(tmp_path: Path) -> None:
+    db = tmp_path / "t.sqlite"
+    conn = connect(db)
+    try:
+        run_migrations(conn)
+        positions = [_pos("0xwhale", "tok1", title="A", size=1000)]
+        client = _StubClient(positions)
+        assert snapshot_wallet(conn, client, "0xwhale") == 1
+        # Second call with identical positions writes nothing.
+        assert snapshot_wallet(conn, client, "0xwhale") == 0
+        n = conn.execute("SELECT COUNT(*) FROM whale_positions").fetchone()[0]
+        assert n == 1
+    finally:
+        conn.close()
+
+
+def test_snapshot_wallet_writes_when_size_changes(tmp_path: Path) -> None:
+    db = tmp_path / "t.sqlite"
+    conn = connect(db)
+    try:
+        run_migrations(conn)
+        client = _StubClient([_pos("0xw", "tok1", size=1000)])
+        snapshot_wallet(conn, client, "0xw")
+        # Mutate the stub's position size and re-snapshot.
+        client._positions = [_pos("0xw", "tok1", size=2000)]
+        assert snapshot_wallet(conn, client, "0xw") == 1
+        n = conn.execute("SELECT COUNT(*) FROM whale_positions").fetchone()[0]
+        assert n == 2
+    finally:
+        conn.close()
+
+
+def test_prune_old_snapshots_deletes_stale_rows(tmp_path: Path) -> None:
+    import time as _time
+
+    db = tmp_path / "t.sqlite"
+    conn = connect(db)
+    try:
+        run_migrations(conn)
+        ancient = int(_time.time()) - 60 * 24 * 60 * 60
+        recent = int(_time.time()) - 60
+        conn.execute(
+            "INSERT INTO whale_positions(wallet, asset_id, size, captured_at) VALUES (?, ?, ?, ?)",
+            ("0xw", "A", 100, ancient),
+        )
+        conn.execute(
+            "INSERT INTO whale_positions(wallet, asset_id, size, captured_at) VALUES (?, ?, ?, ?)",
+            ("0xw", "A", 100, recent),
+        )
+        conn.execute(
+            "INSERT INTO polymarket_books(market_slug, token_id, captured_at, book_json) "
+            "VALUES (?, ?, ?, ?)",
+            ("m", "A", ancient, "{}"),
+        )
+        conn.commit()
+        out = prune_old_snapshots(conn, days=30)
+        assert out["whale_positions"] == 1
+        assert out["polymarket_books"] == 1
+        # Recent row survives.
+        n = conn.execute("SELECT COUNT(*) FROM whale_positions").fetchone()[0]
+        assert n == 1
     finally:
         conn.close()
 
