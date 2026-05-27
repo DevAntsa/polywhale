@@ -179,6 +179,39 @@ def test_process_copy_trades_handles_mixed_signals(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_place_copy_bet_refuses_when_bankroll_full(tmp_path: Path) -> None:
+    """New bets are skipped once total open commitments would exceed bankroll."""
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        # Tiny bankroll so we fill it fast
+        bankroll = 100.0
+        stake_pct = 0.40  # $40 per bet
+        # Place 2 bets (total $80) — should succeed
+        for i in range(2):
+            sig_id = _insert_signal(
+                conn, wallet=f"0xw{i}", asset_id=f"t{i}",
+                signal_type="new_position", current_price=0.40,
+            )
+            assert place_copy_bet(
+                conn, _row(conn, sig_id),
+                bankroll_usd=bankroll, stake_pct=stake_pct,
+            )
+        # Third bet (would push to $120) should be refused
+        sig_id = _insert_signal(
+            conn, wallet="0xw3", asset_id="t3",
+            signal_type="new_position", current_price=0.40,
+        )
+        assert not place_copy_bet(
+            conn, _row(conn, sig_id),
+            bankroll_usd=bankroll, stake_pct=stake_pct,
+        )
+        n = conn.execute("SELECT COUNT(*) FROM poly_paper_bets").fetchone()[0]
+        assert n == 2  # only 2 bets placed
+    finally:
+        conn.close()
+
+
 def test_copy_trade_stats_aggregates(tmp_path: Path) -> None:
     conn = connect(tmp_path / "t.sqlite")
     try:

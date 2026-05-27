@@ -36,6 +36,15 @@ ENTRY_SIGNAL_TYPES = ("new_position", "added_size")
 EXIT_SIGNAL_TYPES = ("closed_position", "reduced_size")
 
 
+def current_deployed_usd(conn: sqlite3.Connection) -> float:
+    """Sum of cost_usd across open whale_copy paper bets."""
+    row = conn.execute(
+        "SELECT COALESCE(SUM(cost_usd), 0) FROM poly_paper_bets "
+        "WHERE source = 'whale_copy' AND settled_at IS NULL"
+    ).fetchone()
+    return float(row[0] or 0)
+
+
 def process_copy_trades(
     conn: sqlite3.Connection,
     *,
@@ -59,6 +68,7 @@ def process_copy_trades(
     ).fetchall()
     opened = 0
     closed = 0
+    skipped_bankroll = 0
     realized_pnl = 0.0
     ai_calls = 0
     for r in rows:
@@ -71,6 +81,7 @@ def process_copy_trades(
                     context=ctx, api_key=ai_api_key, model=ai_model,
                 )
                 ai_calls += 1
+            deployed_before = current_deployed_usd(conn)
             if place_copy_bet(
                 conn, r,
                 bankroll_usd=bankroll_usd,
@@ -79,6 +90,10 @@ def process_copy_trades(
                 ai_advice=ai_advice,
             ):
                 opened += 1
+            else:
+                # If deployed >= bankroll, this skip was bankroll-driven.
+                if deployed_before >= bankroll_usd * 0.99:
+                    skipped_bankroll += 1
         elif sig in EXIT_SIGNAL_TYPES:
             pnl = close_copy_bet(conn, r)
             if pnl is not None:
@@ -87,6 +102,7 @@ def process_copy_trades(
     return {
         "opened": opened,
         "closed": closed,
+        "skipped_bankroll": skipped_bankroll,
         "realized_pnl": round(realized_pnl, 4),
         "ai_calls": ai_calls,
     }
@@ -128,6 +144,13 @@ def place_copy_bet(
     ai_mult = ai_advice.multiplier if ai_advice is not None else 1.0
     final_stake = mechanical_stake * ai_mult
     if final_stake <= 0:
+        return False
+    deployed = current_deployed_usd(conn)
+    if deployed + final_stake > bankroll_usd:
+        logger.info(
+            "place_copy_bet skipped (bankroll full): deployed=$%.2f + new=$%.2f > $%.2f",
+            deployed, final_stake, bankroll_usd,
+        )
         return False
     shares = final_stake / float(price)
     now = int(time.time())

@@ -656,10 +656,12 @@ def whale_fast_cmd(
                 use_ai_advisor=settings.use_ai_advisor,
             )
         ai_tag = f" ai_calls={copy.get('ai_calls', 0)}" if settings.use_ai_advisor else ""
+        sk = copy.get("skipped_bankroll", 0)
+        skip_tag = f" skipped_bankroll={sk}" if sk else ""
         click.echo(
             f"whale-fast: wallets={len(targets)} positions={snap_count} "
             f"signals_detected={len(signals)} stored={stored} "
-            f"copy_opened={copy['opened']} copy_closed={copy['closed']} "
+            f"copy_opened={copy['opened']} copy_closed={copy['closed']}{skip_tag} "
             f"copy_pnl=${copy['realized_pnl']:+.2f}{ai_tag}"
         )
         if alert and stored > 0:
