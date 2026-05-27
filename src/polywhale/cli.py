@@ -860,8 +860,10 @@ def pulse(settings: Settings) -> None:
             row = conn.execute(sql).fetchone()
             return int(row[0]) if row and row[0] is not None else 0
 
-        whales = _scalar("SELECT COUNT(DISTINCT wallet) FROM whale_positions")
-        click.echo(f"  whales tracked       : {whales}")
+        watchlist_active = _scalar("SELECT COUNT(*) FROM whale_watchlist WHERE active = 1")
+        whales_with_positions = _scalar("SELECT COUNT(DISTINCT wallet) FROM whale_positions")
+        click.echo(f"  watchlist (active)   : {watchlist_active}")
+        click.echo(f"  with open positions  : {whales_with_positions}")
         click.echo(f"  whale snapshots      : {_scalar('SELECT COUNT(*) FROM whale_positions')}")
         click.echo(f"  whale signals        : {_scalar('SELECT COUNT(*) FROM whale_signals')}")
         click.echo(f"  book snapshots       : {_scalar('SELECT COUNT(*) FROM polymarket_books')}")

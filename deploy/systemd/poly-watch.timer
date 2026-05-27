@@ -2,9 +2,8 @@
 Description=Run poly-watch every 30 minutes
 
 [Timer]
-OnBootSec=5min
-OnUnitActiveSec=30min
-AccuracySec=1min
+OnCalendar=*:0/30
+AccuracySec=30s
 RandomizedDelaySec=30s
 Persistent=true
 
