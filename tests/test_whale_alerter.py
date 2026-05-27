@@ -110,6 +110,68 @@ def test_format_single_conviction_warning_when_market_moved(tmp_path: Path) -> N
         conn.close()
 
 
+def test_format_single_exit_shows_sold_size(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        _insert_signal(
+            conn,
+            signal_type="closed_position",
+            old_size=250_000,
+            new_size=0,
+        )
+        rows = list(conn.execute("SELECT * FROM whale_signals"))
+        out = _format_single(rows[0], {})
+        assert "🔴" in out
+        assert "<b>EXIT</b>" in out
+        assert "sold" in out
+        assert "250.0K" in out
+    finally:
+        conn.close()
+
+
+def test_format_single_trim_shows_left_and_was(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        _insert_signal(
+            conn,
+            signal_type="reduced_size",
+            old_size=200_000,
+            new_size=50_000,
+        )
+        rows = list(conn.execute("SELECT * FROM whale_signals"))
+        out = _format_single(rows[0], {})
+        assert "➖" in out  # noqa: RUF001
+        assert "<b>TRIM</b>" in out
+        assert "50.0K" in out
+        assert "200.0K" in out
+        assert "left" in out
+    finally:
+        conn.close()
+
+
+def test_format_single_added_shows_up_from(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        _insert_signal(
+            conn,
+            signal_type="added_size",
+            old_size=50_000,
+            new_size=200_000,
+        )
+        rows = list(conn.execute("SELECT * FROM whale_signals"))
+        out = _format_single(rows[0], {})
+        assert "➕" in out  # noqa: RUF001
+        assert "<b>ADDED</b>" in out
+        assert "up from" in out
+        assert "200.0K" in out
+        assert "50.0K" in out
+    finally:
+        conn.close()
+
+
 def test_format_multi_uses_pre_block(tmp_path: Path) -> None:
     conn = connect(tmp_path / "t.sqlite")
     try:

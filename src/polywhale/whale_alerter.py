@@ -27,15 +27,22 @@ SIGNAL_EMOJI = {
 SIGNAL_LABEL = {
     "new_position": "NEW",
     "added_size": "ADDED",
-    "closed_position": "CLOSED",
-    "reduced_size": "REDUCED",
+    "closed_position": "EXIT",
+    "reduced_size": "TRIM",
 }
+
+ALL_SIGNAL_TYPES: tuple[str, ...] = (
+    "new_position",
+    "added_size",
+    "closed_position",
+    "reduced_size",
+)
 
 
 def find_unalerted_signals(
     conn: sqlite3.Connection,
     *,
-    signal_types: tuple[str, ...] = ("new_position", "added_size"),
+    signal_types: tuple[str, ...] = ALL_SIGNAL_TYPES,
     wallets: tuple[str, ...] | None = None,
 ) -> list[sqlite3.Row]:
     placeholders_t = ",".join("?" for _ in signal_types)
@@ -132,20 +139,33 @@ def format_signal_alert(
 
 
 def _format_single(r: sqlite3.Row, labels: dict[str, str]) -> str:
-    emoji = SIGNAL_EMOJI.get(r["signal_type"], "🐋")
-    label = SIGNAL_LABEL.get(r["signal_type"], r["signal_type"].upper())
+    sig = r["signal_type"]
+    emoji = SIGNAL_EMOJI.get(sig, "🐋")
+    label = SIGNAL_LABEL.get(sig, sig.upper())
     wallet_name = labels.get(r["wallet"]) or _short_addr(r["wallet"])
     title = html.escape((r["title"] or "(unknown market)")[:80])
     outcome = html.escape(r["outcome"] or "?")
-    size_str = _fmt_size(r["new_size"])
+    new_size = r["new_size"]
     old_size = r["old_size"]
-    if old_size:
-        size_str = f"{size_str} (was {_fmt_size(old_size)})"
+    if sig == "closed_position":
+        size_line = f"sold <b>{_fmt_size(old_size)}</b>"
+    elif sig == "reduced_size":
+        size_line = (
+            f"<b>{_fmt_size(new_size)}</b> left "
+            f"(down from {_fmt_size(old_size)})"
+        )
+    elif sig == "added_size" and old_size:
+        size_line = (
+            f"<b>{_fmt_size(new_size)}</b> "
+            f"(up from {_fmt_size(old_size)})"
+        )
+    else:
+        size_line = f"size <b>{_fmt_size(new_size)}</b>"
     price = r["current_price"]
     lines = [
         f"{emoji} <b>{label}</b> · 🐋 <b>{html.escape(wallet_name)}</b>",
         f"📊 {title}",
-        f"   <b>{outcome}</b> · size <b>{size_str}</b> · @ {_fmt_price(price)}",
+        f"   <b>{outcome}</b> · {size_line} · @ {_fmt_price(price)}",
     ]
     warn = _conviction_warning(r)
     if warn:
@@ -157,15 +177,23 @@ def _format_multi(rows: list[sqlite3.Row], labels: dict[str, str]) -> str:
     header = f"🐋 <b>{len(rows)} whale moves</b>"
     table_lines = []
     for r in rows[:10]:
-        emoji = SIGNAL_EMOJI.get(r["signal_type"], "🐋")
-        label = SIGNAL_LABEL.get(r["signal_type"], r["signal_type"][:6])
+        sig = r["signal_type"]
+        emoji = SIGNAL_EMOJI.get(sig, "🐋")
+        label = SIGNAL_LABEL.get(sig, sig[:6])
         who = (labels.get(r["wallet"]) or _short_addr(r["wallet"]))[:12]
         outcome = (r["outcome"] or "?")[:10]
-        size = _fmt_size(r["new_size"])
+        if sig == "closed_position":
+            size = _fmt_size(r["old_size"]) + "↓"
+        elif sig == "reduced_size":
+            size = _fmt_size(r["new_size"]) + "↓"
+        elif sig == "added_size":
+            size = _fmt_size(r["new_size"]) + "↑"
+        else:
+            size = _fmt_size(r["new_size"])
         price = _fmt_price(r["current_price"])
         title = (r["title"] or "")[:38]
         table_lines.append(
-            f"{emoji} {label:<7} {who:<12} {outcome:<10} {size:>7} @ {price}  {title}"
+            f"{emoji} {label:<6} {who:<12} {outcome:<10} {size:>8} @ {price}  {title}"
         )
     body = html.escape("\n".join(table_lines))
     if len(rows) > 10:
@@ -182,7 +210,7 @@ def send_signal_alerts(
     *,
     token: str,
     chat_id: str,
-    signal_types: tuple[str, ...] = ("new_position", "added_size"),
+    signal_types: tuple[str, ...] = ALL_SIGNAL_TYPES,
     wallets: tuple[str, ...] | None = None,
     sender: Sender | None = None,
 ) -> dict:

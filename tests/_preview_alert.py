@@ -44,6 +44,22 @@ def main() -> None:
     ok1 = send_message(s.telegram_bot_token, s.telegram_chat_id, format_signal_alert([single]))
     print("single:", ok1)
 
+    exit_signal = _row(
+        wallet="0x9f2fe025f84839ca81dd8e0338892605702d2ca8",
+        signal_type="closed_position",
+        asset_id="t9",
+        market_slug="m",
+        title="Will Trump win 2028 Republican nomination?",
+        outcome="Yes",
+        old_size=250_000,
+        new_size=0,
+        current_price=0.44,
+        recent_move_pct=None,
+        conviction_discount=None,
+    )
+    ok3 = send_message(s.telegram_bot_token, s.telegram_chat_id, format_signal_alert([exit_signal]))
+    print("exit:", ok3)
+
     multi = [
         _row(
             wallet="0xa5ea13a81d2b7e8e424b182bdc1db08e756bd96a",
@@ -73,16 +89,29 @@ def main() -> None:
         ),
         _row(
             wallet="0xf284ad6d607f777f34bc643cea587c33a886b9f9",
-            signal_type="new_position",
+            signal_type="closed_position",
             asset_id="t3",
             market_slug="m",
             title="Will France win Euro 2028?",
             outcome="Yes",
-            old_size=None,
-            new_size=550_000,
+            old_size=550_000,
+            new_size=0,
             current_price=0.18,
-            recent_move_pct=0.09,
-            conviction_discount=0.5,
+            recent_move_pct=None,
+            conviction_discount=None,
+        ),
+        _row(
+            wallet="0xfbf3d501e88815464642d0e913f15379c3eeb218",
+            signal_type="reduced_size",
+            asset_id="t4",
+            market_slug="m",
+            title="Will Lakers win NBA finals?",
+            outcome="Yes",
+            old_size=200_000,
+            new_size=60_000,
+            current_price=0.39,
+            recent_move_pct=None,
+            conviction_discount=None,
         ),
     ]
     ok2 = send_message(s.telegram_bot_token, s.telegram_chat_id, format_signal_alert(multi))
