@@ -192,6 +192,57 @@ def test_deactivate_marks_wallet_inactive(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_update_activity_stats_counts_signals(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        upsert_manual(conn, wallet="0xactive")
+        upsert_manual(conn, wallet="0xquiet")
+        now = int(time.time())
+        # 3 signals for 0xactive, 0 for 0xquiet
+        for i, ts in enumerate([now - 3600, now - 7200, now - 86400]):
+            conn.execute(
+                "INSERT INTO whale_signals(wallet, signal_type, asset_id, market_slug, "
+                "latest_captured_at, detected_at) VALUES (?, 'new_position', ?, 'm', 1, ?)",
+                ("0xactive", f"t{i}", ts),
+            )
+        conn.commit()
+        from polywhale.whale_refresh import update_activity_stats
+        updated = update_activity_stats(conn)
+        assert updated == 1  # only 0xactive matched
+        active_row = conn.execute(
+            "SELECT signals_30d, last_signal_at FROM whale_watchlist WHERE wallet = '0xactive'"
+        ).fetchone()
+        assert active_row["signals_30d"] == 3
+        assert active_row["last_signal_at"] == now - 3600
+        quiet_row = conn.execute(
+            "SELECT signals_30d, last_signal_at FROM whale_watchlist WHERE wallet = '0xquiet'"
+        ).fetchone()
+        assert quiet_row["signals_30d"] == 0
+        assert quiet_row["last_signal_at"] is None
+    finally:
+        conn.close()
+
+
+def test_load_active_watchlist_sorts_by_activity(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        upsert_manual(conn, wallet="0xlow")
+        upsert_manual(conn, wallet="0xhigh")
+        conn.execute(
+            "UPDATE whale_watchlist SET signals_30d = 1 WHERE wallet = '0xlow'"
+        )
+        conn.execute(
+            "UPDATE whale_watchlist SET signals_30d = 10 WHERE wallet = '0xhigh'"
+        )
+        conn.commit()
+        wallets = load_active_watchlist(conn)
+        assert wallets.index("0xhigh") < wallets.index("0xlow")
+    finally:
+        conn.close()
+
+
 def test_upsert_manual_reactivates_existing(tmp_path: Path) -> None:
     conn = connect(tmp_path / "t.sqlite")
     try:

@@ -38,6 +38,7 @@ from polywhale.whale_refresh import (
 from polywhale.whale_refresh import (
     load_active_watchlist,
     refresh_watchlist,
+    update_activity_stats,
     upsert_manual,
 )
 from polywhale.whale_watch import prune_old_snapshots, snapshot_wallet, watch_wallets
@@ -708,33 +709,54 @@ def whale_refresh_cmd(
 @cli.command(name="watchlist")
 @click.option("--all", "show_all", is_flag=True, default=False,
               help="Include deactivated entries in output.")
+@click.option("--no-refresh-stats", is_flag=True, default=False,
+              help="Skip recomputing signals_30d before display (faster).")
 @click.pass_obj
-def watchlist_cmd(settings: Settings, show_all: bool) -> None:
-    """Print the current whale watchlist with stats."""
+def watchlist_cmd(settings: Settings, show_all: bool, no_refresh_stats: bool) -> None:
+    """Print the current whale watchlist sorted by recent activity."""
+    import time as _time
+
     conn = connect(settings.db_path)
     try:
         run_migrations(conn)
+        if not no_refresh_stats:
+            update_activity_stats(conn)
         sql = (
-            "SELECT wallet, label, source, margin_pct, profit_usd, volume_usd, "
-            "active, deactivated_reason FROM whale_watchlist"
+            "SELECT wallet, label, source, margin_pct, profit_usd, "
+            "signals_30d, last_signal_at, active, deactivated_reason "
+            "FROM whale_watchlist"
         )
         if not show_all:
             sql += " WHERE active = 1"
-        sql += " ORDER BY active DESC, profit_usd DESC NULLS LAST"
+        sql += (
+            " ORDER BY active DESC, signals_30d DESC, "
+            "profit_usd DESC NULLS LAST"
+        )
         rows = list(conn.execute(sql))
         if not rows:
             click.echo("Watchlist is empty. Run `polywhale whale-refresh` first.")
             return
-        click.echo(f"{'wallet':<14} {'label':<22} {'src':<13} {'margin%':>8} "
-                   f"{'profit':>12} {'state':<10}")
+        now = int(_time.time())
+        click.echo(
+            f"{'wallet':<14} {'label':<22} {'src':<13} {'margin%':>8} "
+            f"{'profit':>12} {'sigs30':>7} {'last_sig':<12} {'state':<10}"
+        )
         for r in rows:
             label = (r["label"] or "")[:22]
             margin = f"{r['margin_pct']:.1f}" if r["margin_pct"] is not None else "-"
             profit = f"${r['profit_usd']:,.0f}" if r["profit_usd"] is not None else "-"
+            sigs = r["signals_30d"] or 0
+            last_sig = "-"
+            if r["last_signal_at"]:
+                age_h = (now - int(r["last_signal_at"])) / 3600.0
+                if age_h < 24:
+                    last_sig = f"{age_h:.1f}h ago"
+                else:
+                    last_sig = f"{age_h / 24:.1f}d ago"
             state = "active" if r["active"] else (r["deactivated_reason"] or "inactive")
             click.echo(
                 f"{r['wallet'][:14]:<14} {label:<22} {r['source']:<13} "
-                f"{margin:>8} {profit:>12} {state:<10}"
+                f"{margin:>8} {profit:>12} {sigs:>7} {last_sig:<12} {state:<10}"
             )
     finally:
         conn.close()

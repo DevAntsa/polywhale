@@ -135,6 +135,7 @@ def refresh_watchlist(
             added += 1
     conn.commit()
 
+    update_activity_stats(conn)
     deactivated = mark_dormant_auto(conn, days=max_dormant_days)
 
     active_total = conn.execute(
@@ -148,6 +149,31 @@ def refresh_watchlist(
         deactivated=deactivated,
         active_total=int(active_total),
     )
+
+
+def update_activity_stats(conn: sqlite3.Connection, *, window_days: int = 30) -> int:
+    """Refresh signals_30d + last_signal_at on every watchlist row from whale_signals."""
+    cutoff = int(time.time()) - window_days * 86400
+    # Reset all to 0 first so wallets with no recent signals get cleared correctly.
+    conn.execute("UPDATE whale_watchlist SET signals_30d = 0")
+    rows = conn.execute(
+        """
+        SELECT wallet, COUNT(*) AS n, MAX(detected_at) AS last_ts
+        FROM whale_signals
+        WHERE detected_at >= ?
+        GROUP BY wallet
+        """,
+        (cutoff,),
+    ).fetchall()
+    updated = 0
+    for r in rows:
+        cur = conn.execute(
+            "UPDATE whale_watchlist SET signals_30d = ?, last_signal_at = ? WHERE wallet = ?",
+            (int(r["n"]), int(r["last_ts"]), r["wallet"]),
+        )
+        updated += cur.rowcount
+    conn.commit()
+    return updated
 
 
 def mark_dormant_auto(conn: sqlite3.Connection, *, days: int) -> int:
@@ -179,9 +205,12 @@ def mark_dormant_auto(conn: sqlite3.Connection, *, days: int) -> int:
 
 
 def load_active_watchlist(conn: sqlite3.Connection) -> list[str]:
-    """Active wallets from DB. Falls back to static union if DB is empty (transition-safe)."""
+    """Active wallets from DB, sorted by recent activity then profit.
+    Falls back to static union if DB is empty (transition-safe).
+    """
     rows = conn.execute(
-        "SELECT wallet FROM whale_watchlist WHERE active = 1 ORDER BY profit_usd DESC NULLS LAST"
+        "SELECT wallet FROM whale_watchlist WHERE active = 1 "
+        "ORDER BY signals_30d DESC, profit_usd DESC NULLS LAST"
     ).fetchall()
     if rows:
         return [r["wallet"] for r in rows]
