@@ -16,15 +16,15 @@ def send_message(
     *,
     base_url: str = API_BASE,
     timeout: float = 10.0,
+    parse_mode: str | None = "HTML",
 ) -> bool:
     """Send a message via Telegram Bot API. Returns True on success, False on any failure."""
     url = f"{base_url}/bot{token}/sendMessage"
+    payload: dict = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     try:
-        resp = httpx.post(
-            url,
-            json={"chat_id": chat_id, "text": text},
-            timeout=timeout,
-        )
+        resp = httpx.post(url, json=payload, timeout=timeout)
     except httpx.HTTPError as exc:
         logger.warning("telegram send failed: %s", exc)
         return False
