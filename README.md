@@ -140,6 +140,7 @@ Single-file SQLite, `httpx` for sync I/O, `click` for CLI. No queues, no Kafka, 
 | `polywhale poly-paper-freeze --bet-id N --reason "..."` | Freeze a paper bet (e.g., during UMA dispute) so settlement skips it |
 | `polywhale poly-paper-unfreeze --bet-id N` | Clear the frozen flag |
 | `polywhale poly-paper-pulse` | Per-source P&L breakdown |
+| `polywhale backtest [--since-days N]` | Replay historical signals into synthetic bets; show per-whale P&L attribution |
 | `polywhale pulse` | At-a-glance status snapshot |
 
 ---

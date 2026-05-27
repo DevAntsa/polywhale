@@ -9,6 +9,12 @@ import sys
 
 import click
 
+from polywhale.backtest import (
+    collect_signals,
+    resolve_bets,
+    summarize,
+    synthesize_bets,
+)
 from polywhale.config import Settings
 from polywhale.db import connect, run_migrations
 from polywhale.logging_setup import configure as configure_logging
@@ -23,7 +29,7 @@ from polywhale.poly_paper import (
 )
 from polywhale.poly_watch import WatchTarget, watch_loop
 from polywhale.polymarket import PolymarketClient
-from polywhale.whale_alerter import send_signal_alerts
+from polywhale.whale_alerter import _wallet_labels, send_signal_alerts
 from polywhale.whale_classify import fetch_and_classify, persist_profiles, top_arb_ops, top_sharps
 from polywhale.whale_diff import detect_for_wallets, persist_signals
 from polywhale.whale_watch import prune_old_snapshots, snapshot_wallet, watch_wallets
@@ -650,6 +656,77 @@ def whale_fast_cmd(
                 )
                 if summary["sent"]:
                     click.echo(f"Telegram alert sent for {summary['signals']} signal(s).")
+    finally:
+        conn.close()
+
+
+@cli.command(name="backtest")
+@click.option("--since-days", type=int, default=30, show_default=True)
+@click.option("--stake", type=float, default=100.0, show_default=True,
+              help="Base stake per signal (USD).")
+@click.option("--min-conviction", type=float, default=0.0, show_default=True,
+              help="Drop signals whose conviction_discount is below this.")
+@click.option("--no-conviction-weighting", is_flag=True, default=False,
+              help="Treat all signals as full stake regardless of conviction discount.")
+@click.option("--top", "top_n", type=int, default=20, show_default=True)
+@click.pass_obj
+def backtest_cmd(
+    settings: Settings,
+    since_days: int,
+    stake: float,
+    min_conviction: float,
+    no_conviction_weighting: bool,
+    top_n: int,
+) -> None:
+    """Replay historical whale signals into synthetic paper bets; show per-wallet PnL."""
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        rows = collect_signals(
+            conn, since_days=since_days, min_conviction=min_conviction
+        )
+        bets = synthesize_bets(
+            rows,
+            stake_per_signal=stake,
+            weight_by_conviction=not no_conviction_weighting,
+        )
+        with PolymarketClient() as client:
+            resolved = resolve_bets(bets, client)
+        s = summarize(len(rows), resolved)
+        click.echo(f"=== Backtest: last {since_days} days ===")
+        click.echo(f"  signals collected : {s.signals_total}")
+        click.echo(f"  synthetic bets    : {s.bets_placed}")
+        click.echo(f"  resolved          : {s.bets_resolved}")
+        click.echo(f"  unresolved (skip) : {s.bets_unresolved}")
+        click.echo(f"  total PnL         : ${s.total_pnl:+,.2f}")
+        if not s.by_wallet:
+            click.echo("\nNo bets to score yet. Run the live bot for a few days, then retry.")
+            return
+        labels = _wallet_labels(conn, list(s.by_wallet.keys()))
+        click.echo("\nPer-whale attribution (sorted by settled PnL):")
+        ranked = sorted(
+            s.by_wallet.items(),
+            key=lambda kv: -kv[1]["pnl"],
+        )[:top_n]
+        for wallet, stats in ranked:
+            label = labels.get(wallet) or wallet[:14] + "..."
+            click.echo(
+                f"  {label:<25} bets={stats['bets']:>3}  "
+                f"settled={stats['settled']:>3}  "
+                f"W/L={stats['wins']}/{stats['losses']:<3}  "
+                f"PnL=${stats['pnl']:+,.2f}"
+            )
+        click.echo("\nConviction bucket (does overreaction filter help?):")
+        for bucket in ("full", "discount-light", "discount-heavy", "discount-floor"):
+            stats = s.by_bucket.get(bucket)
+            if not stats:
+                continue
+            click.echo(
+                f"  {bucket:<18} bets={stats['bets']:>3}  "
+                f"settled={stats['settled']:>3}  "
+                f"W/L={stats['wins']}/{stats['losses']:<3}  "
+                f"PnL=${stats['pnl']:+,.2f}"
+            )
     finally:
         conn.close()
 
