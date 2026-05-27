@@ -33,7 +33,8 @@ def test_settings_load_with_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyP
     for k in (
         "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "POLYWHALE_DB_PATH",
         "POLYWHALE_LOG_LEVEL", "POLYWHALE_PAPER_BANKROLL_USD",
-        "POLYWHALE_PAPER_STAKE_PCT",
+        "POLYWHALE_PAPER_STAKE_PCT", "OPENROUTER_API_KEY",
+        "POLYWHALE_AI_MODEL", "POLYWHALE_USE_AI_ADVISOR",
     ):
         monkeypatch.delenv(k, raising=False)
     empty = tmp_path / ".env"
@@ -45,6 +46,9 @@ def test_settings_load_with_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert settings.log_level == "INFO"
     assert settings.paper_bankroll_usd == 2000.0
     assert settings.paper_stake_pct == 0.02
+    assert settings.openrouter_api_key == ""
+    assert settings.ai_model == "anthropic/claude-haiku-4.5"
+    assert settings.use_ai_advisor is False
 
 
 def test_settings_load_populates_fields(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

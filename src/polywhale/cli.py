@@ -651,12 +651,16 @@ def whale_fast_cmd(
                 conn,
                 bankroll_usd=settings.paper_bankroll_usd,
                 stake_pct=settings.paper_stake_pct,
+                ai_api_key=settings.openrouter_api_key,
+                ai_model=settings.ai_model,
+                use_ai_advisor=settings.use_ai_advisor,
             )
+        ai_tag = f" ai_calls={copy.get('ai_calls', 0)}" if settings.use_ai_advisor else ""
         click.echo(
             f"whale-fast: wallets={len(targets)} positions={snap_count} "
             f"signals_detected={len(signals)} stored={stored} "
             f"copy_opened={copy['opened']} copy_closed={copy['closed']} "
-            f"copy_pnl=${copy['realized_pnl']:+.2f}"
+            f"copy_pnl=${copy['realized_pnl']:+.2f}{ai_tag}"
         )
         if alert and stored > 0:
             if not settings.telegram_bot_token or not settings.telegram_chat_id:

@@ -125,10 +125,22 @@ def _paper_trade_line(conn: sqlite3.Connection, signal_row: sqlite3.Row) -> str 
         stake = float(bet["cost_usd"])
         shares = float(bet["size_shares"])
         price = float(bet["entry_price"])
-        return (
+        line = (
             f"💰 paper stake: <b>${stake:.0f}</b> "
             f"→ {shares:,.0f} shares @ {price:.3f}"
         )
+        ai_mult = bet["ai_multiplier"] if "ai_multiplier" in bet.keys() else None
+        ai_reason = bet["ai_reason"] if "ai_reason" in bet.keys() else None
+        if ai_mult is not None and ai_reason:
+            mech = bet["mechanical_stake"] if "mechanical_stake" in bet.keys() else None
+            mech_str = (
+                f" (mech ${float(mech):.0f} x {float(ai_mult):.2f})" if mech else ""
+            )
+            line += (
+                f"\n🤖 AI: {float(ai_mult):.2f}x{mech_str} - "
+                f"{html.escape(ai_reason)}"
+            )
+        return line
     if sig in EXIT_SIGNAL_TYPES:
         bet = find_closed_copy_bet_by_exit_signal(conn, signal_row["signal_id"])
         if not bet or bet["pnl_usd"] is None:

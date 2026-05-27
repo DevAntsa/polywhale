@@ -28,6 +28,9 @@ class Settings:
     log_level: str
     paper_bankroll_usd: float
     paper_stake_pct: float
+    openrouter_api_key: str
+    ai_model: str
+    use_ai_advisor: bool
 
     @classmethod
     def load(cls, dotenv_path: Path | None = None) -> "Settings":
@@ -40,6 +43,10 @@ class Settings:
             log_level=os.environ.get("POLYWHALE_LOG_LEVEL", "INFO"),
             paper_bankroll_usd=float(os.environ.get("POLYWHALE_PAPER_BANKROLL_USD", "2000")),
             paper_stake_pct=float(os.environ.get("POLYWHALE_PAPER_STAKE_PCT", "0.02")),
+            openrouter_api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+            ai_model=os.environ.get("POLYWHALE_AI_MODEL", "anthropic/claude-haiku-4.5"),
+            use_ai_advisor=os.environ.get("POLYWHALE_USE_AI_ADVISOR", "false").lower()
+            in ("true", "1", "yes"),
         )
 
 
