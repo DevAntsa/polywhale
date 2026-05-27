@@ -11,6 +11,12 @@ import sqlite3
 import time
 from collections.abc import Callable
 
+from polywhale.copy_trader import (
+    ENTRY_SIGNAL_TYPES,
+    EXIT_SIGNAL_TYPES,
+    find_closed_copy_bet_by_exit_signal,
+    find_open_copy_bet_for_signal,
+)
 from polywhale.telegram import send_message
 
 logger = logging.getLogger(__name__)
@@ -105,6 +111,57 @@ def _fmt_price(p: float | None) -> str:
     return f"{float(p):.3f}" if p is not None else "?"
 
 
+def _paper_trade_line(conn: sqlite3.Connection, signal_row: sqlite3.Row) -> str | None:
+    """Return a one-line summary of our paper bet's status for this signal, or None.
+
+    NEW/ADDED -> our just-opened position size.
+    EXIT/TRIM -> realized PnL on the paper bet we closed (if any).
+    """
+    sig = signal_row["signal_type"]
+    if sig in ENTRY_SIGNAL_TYPES:
+        bet = find_open_copy_bet_for_signal(conn, signal_row["signal_id"])
+        if not bet:
+            return None
+        stake = float(bet["cost_usd"])
+        shares = float(bet["size_shares"])
+        price = float(bet["entry_price"])
+        return (
+            f"💰 paper stake: <b>${stake:.0f}</b> "
+            f"→ {shares:,.0f} shares @ {price:.3f}"
+        )
+    if sig in EXIT_SIGNAL_TYPES:
+        bet = find_closed_copy_bet_by_exit_signal(conn, signal_row["signal_id"])
+        if not bet or bet["pnl_usd"] is None:
+            return None
+        pnl = float(bet["pnl_usd"])
+        entry = float(bet["entry_price"])
+        exit_p = float(bet["payout_per_share"] or 0)
+        sign = "+" if pnl >= 0 else "-"
+        pct = (pnl / float(bet["cost_usd"]) * 100.0) if bet["cost_usd"] else 0.0
+        return (
+            f"💰 paper exit @ {exit_p:.3f} · "
+            f"PnL: <b>{sign}${abs(pnl):,.2f}</b> ({pct:+.1f}%)"
+            f" · entry was {entry:.3f}"
+        )
+    return None
+
+
+def _paper_trade_compact(conn: sqlite3.Connection, signal_row: sqlite3.Row) -> str:
+    """Compact paper info for the multi-signal table (one column-suffix)."""
+    sig = signal_row["signal_type"]
+    if sig in ENTRY_SIGNAL_TYPES:
+        bet = find_open_copy_bet_for_signal(conn, signal_row["signal_id"])
+        if bet:
+            return f"  $-{float(bet['cost_usd']):.0f}"
+    elif sig in EXIT_SIGNAL_TYPES:
+        bet = find_closed_copy_bet_by_exit_signal(conn, signal_row["signal_id"])
+        if bet and bet["pnl_usd"] is not None:
+            pnl = float(bet["pnl_usd"])
+            sign = "+" if pnl >= 0 else "-"
+            return f"  {sign}${abs(pnl):.0f}"
+    return ""
+
+
 def _conviction_warning(r: sqlite3.Row) -> str | None:
     """If the market already moved meaningfully toward the whale's side, flag it."""
     if "conviction_discount" not in r.keys() or "recent_move_pct" not in r.keys():
@@ -129,16 +186,19 @@ def format_signal_alert(
     signals: list[sqlite3.Row],
     *,
     labels: dict[str, str] | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> str:
     labels = labels or {}
     if not signals:
         return ""
     if len(signals) == 1:
-        return _format_single(signals[0], labels)
-    return _format_multi(signals, labels)
+        return _format_single(signals[0], labels, conn=conn)
+    return _format_multi(signals, labels, conn=conn)
 
 
-def _format_single(r: sqlite3.Row, labels: dict[str, str]) -> str:
+def _format_single(
+    r: sqlite3.Row, labels: dict[str, str], *, conn: sqlite3.Connection | None = None
+) -> str:
     sig = r["signal_type"]
     emoji = SIGNAL_EMOJI.get(sig, "🐋")
     label = SIGNAL_LABEL.get(sig, sig.upper())
@@ -170,10 +230,16 @@ def _format_single(r: sqlite3.Row, labels: dict[str, str]) -> str:
     warn = _conviction_warning(r)
     if warn:
         lines.append(warn)
+    if conn is not None:
+        paper = _paper_trade_line(conn, r)
+        if paper:
+            lines.append(paper)
     return "\n".join(lines)
 
 
-def _format_multi(rows: list[sqlite3.Row], labels: dict[str, str]) -> str:
+def _format_multi(
+    rows: list[sqlite3.Row], labels: dict[str, str], *, conn: sqlite3.Connection | None = None
+) -> str:
     header = f"🐋 <b>{len(rows)} whale moves</b>"
     table_lines = []
     for r in rows[:10]:
@@ -191,9 +257,11 @@ def _format_multi(rows: list[sqlite3.Row], labels: dict[str, str]) -> str:
         else:
             size = _fmt_size(r["new_size"])
         price = _fmt_price(r["current_price"])
-        title = (r["title"] or "")[:38]
+        title = (r["title"] or "")[:30]
+        paper_tag = _paper_trade_compact(conn, r) if conn is not None else ""
         table_lines.append(
-            f"{emoji} {label:<6} {who:<12} {outcome:<10} {size:>8} @ {price}  {title}"
+            f"{emoji} {label:<6} {who:<12} {outcome:<10} {size:>8} @ {price}  "
+            f"{title}{paper_tag}"
         )
     body = html.escape("\n".join(table_lines))
     if len(rows) > 10:
@@ -220,7 +288,7 @@ def send_signal_alerts(
     if not rows:
         return {"sent": False, "signals": 0, "reason": "no unalerted signals"}
     labels = _wallet_labels(conn, list({r["wallet"] for r in rows}))
-    text = format_signal_alert(rows, labels=labels)
+    text = format_signal_alert(rows, labels=labels, conn=conn)
     ok = send(token, chat_id, text)
     if not ok:
         return {"sent": False, "signals": len(rows), "reason": "telegram api failed"}

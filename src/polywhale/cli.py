@@ -16,6 +16,7 @@ from polywhale.backtest import (
     synthesize_bets,
 )
 from polywhale.config import Settings
+from polywhale.copy_trader import copy_trade_stats, process_copy_trades
 from polywhale.db import connect, run_migrations
 from polywhale.logging_setup import configure as configure_logging
 from polywhale.poly_arb import detect_combo_arb, inspect_event, persist_combo_arb
@@ -644,9 +645,18 @@ def whale_fast_cmd(
                     logger.warning("snapshot failed for %s: %s", wallet, exc)
         signals = detect_for_wallets(conn, targets)
         stored = persist_signals(conn, signals)
+        copy = {"opened": 0, "closed": 0, "realized_pnl": 0.0}
+        if stored > 0:
+            copy = process_copy_trades(
+                conn,
+                bankroll_usd=settings.paper_bankroll_usd,
+                stake_pct=settings.paper_stake_pct,
+            )
         click.echo(
             f"whale-fast: wallets={len(targets)} positions={snap_count} "
-            f"signals_detected={len(signals)} stored={stored}"
+            f"signals_detected={len(signals)} stored={stored} "
+            f"copy_opened={copy['opened']} copy_closed={copy['closed']} "
+            f"copy_pnl=${copy['realized_pnl']:+.2f}"
         )
         if alert and stored > 0:
             if not settings.telegram_bot_token or not settings.telegram_chat_id:
@@ -904,6 +914,19 @@ def pulse(settings: Settings) -> None:
             f"(settled: {paper_settled}, frozen: {paper_frozen})"
         )
         click.echo(f"  paper P&L            : ${paper_pnl:+.2f}")
+        ct = copy_trade_stats(conn)
+        click.echo("  --- whale copy ---")
+        click.echo(
+            f"  open copy positions  : {ct['open_positions']}  "
+            f"(${ct['capital_deployed']:.2f} deployed of ${settings.paper_bankroll_usd:.0f})"
+        )
+        click.echo(
+            f"  closed copy trades   : {ct['closed_positions']}  "
+            f"(W/L: {ct['wins']}/{ct['losses']}, "
+            f"WR: {ct['win_rate_pct']}%)" if ct["win_rate_pct"] is not None
+            else f"  closed copy trades   : {ct['closed_positions']}"
+        )
+        click.echo(f"  realized copy P&L    : ${ct['realized_pnl']:+.2f}")
     finally:
         conn.close()
 

@@ -26,6 +26,8 @@ class Settings:
     telegram_chat_id: str
     db_path: Path
     log_level: str
+    paper_bankroll_usd: float
+    paper_stake_pct: float
 
     @classmethod
     def load(cls, dotenv_path: Path | None = None) -> "Settings":
@@ -36,6 +38,8 @@ class Settings:
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
             db_path=Path(os.environ.get("POLYWHALE_DB_PATH", "data/polywhale.sqlite")),
             log_level=os.environ.get("POLYWHALE_LOG_LEVEL", "INFO"),
+            paper_bankroll_usd=float(os.environ.get("POLYWHALE_PAPER_BANKROLL_USD", "2000")),
+            paper_stake_pct=float(os.environ.get("POLYWHALE_PAPER_STAKE_PCT", "0.02")),
         )
 
 
