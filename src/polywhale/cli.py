@@ -43,7 +43,9 @@ from polywhale.whale_refresh import (
 )
 from polywhale.whale_refresh import (
     load_active_watchlist,
+    mark_endorsed,
     refresh_watchlist,
+    set_risk_flags,
     update_activity_stats,
     upsert_manual,
 )
@@ -916,6 +918,42 @@ def whale_review_cmd(
                 f"\n  {len(droppable)} whale(s) recommended for drop. "
                 "Re-run with --auto-drop to apply."
             )
+    finally:
+        conn.close()
+
+
+@cli.command(name="watchlist-endorse")
+@click.option("--wallet", required=True)
+@click.option("--source", required=True,
+              help="Endorsement source (e.g. 'polymarket-26-list', 'verified-public-handle').")
+@click.option("--risk-flags", default=None,
+              help="Optional risk tag (e.g. 'insider-cluster', 'high-variance').")
+@click.pass_obj
+def watchlist_endorse_cmd(
+    settings: Settings, wallet: str, source: str, risk_flags: str | None,
+) -> None:
+    """Mark a wallet as endorsed (exempt from auto-drop)."""
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        ok = mark_endorsed(conn, wallet, source=source, risk_flags=risk_flags)
+        click.echo(f"watchlist-endorse {wallet}: {'ok' if ok else 'wallet not found'}")
+    finally:
+        conn.close()
+
+
+@cli.command(name="watchlist-risk")
+@click.option("--wallet", required=True)
+@click.option("--flags", required=True,
+              help="Risk flag(s) — comma-sep. e.g. 'insider-cluster,iran-market'")
+@click.pass_obj
+def watchlist_risk_cmd(settings: Settings, wallet: str, flags: str) -> None:
+    """Tag a wallet with risk flags for monitoring."""
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        ok = set_risk_flags(conn, wallet, flags)
+        click.echo(f"watchlist-risk {wallet}: {'ok' if ok else 'wallet not found'}")
     finally:
         conn.close()
 

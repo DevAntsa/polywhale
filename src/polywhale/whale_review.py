@@ -193,6 +193,18 @@ def evaluate_whale(
         recommendation = REC_WATCH
         reason = f"{reason} [manual — not auto-dropped]"
 
+    # Endorsed wallets are NEVER auto-dropped regardless of source. Some genuine
+    # alpha strategies (e.g. wokerjoesleeper's 81% WR low-prob-NOs algo
+    # endorsed by Polymarket's official 26-address smart-money list) don't
+    # surface PnL at our 60s polling cadence.
+    is_endorsed = "endorsed" in wl.keys() and wl["endorsed"]
+    if is_endorsed and recommendation in (REC_DROP, REC_DROP_DORMANT):
+        endorsement_src = (
+            wl["endorsement_source"] if "endorsement_source" in wl.keys() else "endorsed"
+        )
+        recommendation = REC_WATCH
+        reason = f"{reason} [endorsed: {endorsement_src} — not auto-dropped]"
+
     return WhaleReview(
         wallet=wallet,
         label=wl["label"],

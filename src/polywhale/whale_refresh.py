@@ -343,3 +343,30 @@ def deactivate(conn: sqlite3.Connection, wallet: str, *, reason: str = "manual")
     )
     conn.commit()
     return cur.rowcount > 0
+
+
+def mark_endorsed(
+    conn: sqlite3.Connection,
+    wallet: str,
+    *,
+    source: str,
+    risk_flags: str | None = None,
+) -> bool:
+    """Mark a wallet as officially endorsed (exempt from auto-drop)."""
+    cur = conn.execute(
+        "UPDATE whale_watchlist SET endorsed = 1, endorsement_source = ?, "
+        "risk_flags = COALESCE(?, risk_flags) WHERE wallet = ?",
+        (source, risk_flags, wallet.lower()),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def set_risk_flags(conn: sqlite3.Connection, wallet: str, flags: str) -> bool:
+    """Append a risk-flag tag to a wallet (insider-cluster, dormant-cycle, etc)."""
+    cur = conn.execute(
+        "UPDATE whale_watchlist SET risk_flags = ? WHERE wallet = ?",
+        (flags, wallet.lower()),
+    )
+    conn.commit()
+    return cur.rowcount > 0
