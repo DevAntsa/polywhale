@@ -76,11 +76,18 @@ def process_copy_trades(
         if sig in ENTRY_SIGNAL_TYPES:
             ai_advice = None
             if use_ai_advisor and ai_api_key:
-                ctx = build_context_from_signal(conn, r, bankroll=bankroll_usd)
-                ai_advice = call_advisor(
-                    context=ctx, api_key=ai_api_key, model=ai_model,
-                )
-                ai_calls += 1
+                try:
+                    ctx = build_context_from_signal(conn, r, bankroll=bankroll_usd)
+                    ai_advice = call_advisor(
+                        context=ctx, api_key=ai_api_key, model=ai_model,
+                    )
+                    ai_calls += 1
+                except Exception as exc:
+                    logger.warning(
+                        "ai_advisor failed for signal %s: %s — falling back to 1.0x",
+                        r["signal_id"], exc,
+                    )
+                    ai_advice = None
             deployed_before = current_deployed_usd(conn)
             if place_copy_bet(
                 conn, r,

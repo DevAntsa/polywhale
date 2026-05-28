@@ -31,6 +31,9 @@ def snapshot_wallet(
     Limitation: a whale going from having positions to zero positions is not recorded;
     we'll miss the corresponding 'closed_position' signal in that rare case.
     """
+    # data-api can return mixed-case proxyWallet; normalize so downstream
+    # joins against whale_watchlist.wallet (always lowercase) match correctly.
+    wallet = wallet.lower()
     positions = client.get_whale_positions(wallet, size_threshold=size_threshold)
     if not positions:
         logger.debug("snapshot_wallet(%s): no positions above threshold", wallet)
@@ -132,7 +135,7 @@ def watch_wallets(
 
 def _to_row(p: WhalePosition, now: int) -> tuple:
     return (
-        p.wallet,
+        p.wallet.lower(),
         p.asset_id,
         p.condition_id,
         p.market_slug,
