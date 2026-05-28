@@ -17,6 +17,7 @@ from polywhale.whale_review import (
     auto_drop,
     evaluate_all_active,
     evaluate_whale,
+    review_and_autodrop,
 )
 
 
@@ -179,6 +180,40 @@ def test_auto_drop_deactivates_droppable_entries(tmp_path: Path) -> None:
         ).fetchone()
         assert row["active"] == 0
         assert "review" in row["deactivated_reason"]
+    finally:
+        conn.close()
+
+
+def test_review_and_autodrop_returns_drop_details(tmp_path: Path) -> None:
+    """review_and_autodrop both deactivates and returns the WhaleReview rows."""
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        _add_auto_wallet(conn, "0xloser")
+        _add_closed_bets(conn, "0xloser", count=30, pnl_each=-2.0)
+        _add_auto_wallet(conn, "0xwinner")
+        _add_closed_bets(conn, "0xwinner", count=30, pnl_each=10.0)
+        dropped = review_and_autodrop(conn, min_trades_to_judge=25)
+        wallets = [r.wallet for r in dropped]
+        assert "0xloser" in wallets
+        assert "0xwinner" not in wallets
+        # The 0xloser row should now be inactive
+        n_active = conn.execute(
+            "SELECT COUNT(*) FROM whale_watchlist WHERE active = 1"
+        ).fetchone()[0]
+        assert n_active == 1
+    finally:
+        conn.close()
+
+
+def test_review_and_autodrop_empty_when_nothing_droppable(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        _add_auto_wallet(conn, "0xa")
+        _add_closed_bets(conn, "0xa", count=30, pnl_each=10.0)  # winner
+        dropped = review_and_autodrop(conn, min_trades_to_judge=25)
+        assert dropped == []
     finally:
         conn.close()
 

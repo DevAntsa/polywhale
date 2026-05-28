@@ -42,7 +42,11 @@ from polywhale.whale_refresh import (
     update_activity_stats,
     upsert_manual,
 )
-from polywhale.whale_review import auto_drop, evaluate_all_active
+from polywhale.whale_review import (
+    auto_drop,
+    evaluate_all_active,
+    review_and_autodrop,
+)
 from polywhale.whale_watch import prune_old_snapshots, snapshot_wallet, watch_wallets
 
 logger = logging.getLogger("polywhale")
@@ -610,6 +614,19 @@ def whale_signals_cmd(
         conn.close()
 
 
+def _send_autodrop_alert(reviews, *, token: str, chat_id: str) -> None:
+    """Notify Telegram when whale-fast auto-drops one or more whales."""
+    import html as _html
+
+    from polywhale.telegram import send_message
+    lines = [f"🚫 <b>Auto-dropped {len(reviews)} whale(s)</b>"]
+    for r in reviews:
+        who = _html.escape(r.label or r.wallet[:14])
+        reason = _html.escape(r.reason)[:140]
+        lines.append(f"• <b>{who}</b> [tier {r.tier}] — {reason}")
+    send_message(token, chat_id, "\n".join(lines))
+
+
 @cli.command(name="whale-fast")
 @click.option("--wallet", "wallets", multiple=True)
 @click.option("--default", "use_default", is_flag=True, default=False)
@@ -656,15 +673,26 @@ def whale_fast_cmd(
                 ai_model=settings.ai_model,
                 use_ai_advisor=settings.use_ai_advisor,
             )
+        # Continuous auto-drop: re-tier every cycle. Manual entries are exempt
+        # (handled inside evaluate_whale). When trades close, tier D/E becomes
+        # actionable immediately instead of waiting for Sunday's refresh.
+        dropped_reviews = review_and_autodrop(conn)
         ai_tag = f" ai_calls={copy.get('ai_calls', 0)}" if settings.use_ai_advisor else ""
         sk = copy.get("skipped_bankroll", 0)
         skip_tag = f" skipped_bankroll={sk}" if sk else ""
+        drop_tag = f" dropped={len(dropped_reviews)}" if dropped_reviews else ""
         click.echo(
             f"whale-fast: wallets={len(targets)} positions={snap_count} "
             f"signals_detected={len(signals)} stored={stored} "
             f"copy_opened={copy['opened']} copy_closed={copy['closed']}{skip_tag} "
-            f"copy_pnl=${copy['realized_pnl']:+.2f}{ai_tag}"
+            f"copy_pnl=${copy['realized_pnl']:+.2f}{ai_tag}{drop_tag}"
         )
+        if dropped_reviews and settings.telegram_bot_token and settings.telegram_chat_id:
+            _send_autodrop_alert(
+                dropped_reviews,
+                token=settings.telegram_bot_token,
+                chat_id=settings.telegram_chat_id,
+            )
         if alert and stored > 0:
             if not settings.telegram_bot_token or not settings.telegram_chat_id:
                 click.echo("[alert skipped: Telegram not configured]")

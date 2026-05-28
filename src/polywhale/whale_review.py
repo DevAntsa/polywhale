@@ -46,6 +46,8 @@ REC_WATCH = "watch"
 REC_DROP = "drop"
 REC_DROP_DORMANT = "drop_dormant"
 
+DROPPABLE = (REC_DROP, REC_DROP_DORMANT)
+
 
 @dataclass(frozen=True)
 class WhaleReview:
@@ -229,6 +231,23 @@ def evaluate_all_active(
         if rev is not None:
             out.append(rev)
     return out
+
+
+def review_and_autodrop(
+    conn: sqlite3.Connection, **kwargs
+) -> list[WhaleReview]:
+    """One-shot: evaluate all active whales, auto-drop droppable ones, return the
+    drop list (full WhaleReview objects, useful for Telegram alerts).
+
+    Manual entries are exempted in evaluate_whale; they never appear in the
+    returned drop list.
+    """
+    reviews = evaluate_all_active(conn, **kwargs)
+    droppable = [r for r in reviews if r.recommendation in DROPPABLE]
+    if not droppable:
+        return []
+    dropped_wallets = set(auto_drop(conn, droppable))
+    return [r for r in droppable if r.wallet in dropped_wallets]
 
 
 def auto_drop(
