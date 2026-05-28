@@ -19,6 +19,7 @@ from polywhale.config import Settings
 from polywhale.copy_trader import copy_trade_stats, process_copy_trades
 from polywhale.db import connect, run_migrations
 from polywhale.logging_setup import configure as configure_logging
+from polywhale.monte_carlo import simulate_aggregated, simulate_per_whale
 from polywhale.poly_arb import detect_combo_arb, inspect_event, persist_combo_arb
 from polywhale.poly_paper import (
     freeze_paper_bet,
@@ -1015,6 +1016,73 @@ def backtest_cmd(
                 f"W/L={stats['wins']}/{stats['losses']:<3}  "
                 f"PnL=${stats['pnl']:+,.2f}"
             )
+    finally:
+        conn.close()
+
+
+@cli.command(name="monte-carlo")
+@click.option("--horizon-days", type=int, default=7, show_default=True,
+              help="Future-window length in days.")
+@click.option("--samples", type=int, default=10_000, show_default=True,
+              help="Number of bootstrap simulations.")
+@click.option("--per-whale", "per_whale", is_flag=True, default=False,
+              help="Resample each whale independently (preserves correlation).")
+@click.option("--seed", type=int, default=None,
+              help="Random seed for reproducible runs.")
+@click.pass_obj
+def monte_carlo_cmd(
+    settings: Settings,
+    horizon_days: int,
+    samples: int,
+    per_whale: bool,
+    seed: int | None,
+) -> None:
+    """Bootstrap-resample historical paper PnL to project future-period distribution."""
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        if per_whale:
+            result = simulate_per_whale(
+                conn, horizon_days=horizon_days, samples=samples, seed=seed
+            )
+        else:
+            result = simulate_aggregated(
+                conn, horizon_days=horizon_days, samples=samples, seed=seed
+            )
+        click.echo(
+            f"=== Monte Carlo ({result.mode}) ===\n"
+            f"  samples         : {result.samples:,}\n"
+            f"  horizon         : {result.horizon_days} days\n"
+            f"  trades/sample   : {result.trades_per_sample}\n"
+            f"  historical n    : {result.historical_trades}\n"
+            f"  hist mean/trade : ${result.historical_mean:+.2f}\n"
+            f"  hist stdev      : ${result.historical_stdev:.2f}\n"
+            f"\n"
+            f"Future PnL distribution over {result.horizon_days}d "
+            f"({result.trades_per_sample} trades/sample):\n"
+            f"   5th percentile : ${result.p5:+10,.2f}\n"
+            f"  25th percentile : ${result.p25:+10,.2f}\n"
+            f"  50th (median)   : ${result.median_pnl:+10,.2f}\n"
+            f"  75th percentile : ${result.p75:+10,.2f}\n"
+            f"  95th percentile : ${result.p95:+10,.2f}\n"
+            f"  mean            : ${result.mean_pnl:+10,.2f}\n"
+            f"\n"
+            f"  P(positive PnL)            : {result.prob_positive * 100:.1f}%\n"
+            f"  median max-drawdown        : ${result.median_drawdown:,.2f}\n"
+            f"  95th-pct (bad-case) DD     : ${result.p95_drawdown:,.2f}\n"
+        )
+        if per_whale and result.per_whale_breakdown:
+            click.echo("Per-whale expected contribution over horizon:")
+            ranked = sorted(
+                result.per_whale_breakdown.items(), key=lambda kv: -kv[1]
+            )
+            for wallet, expected in ranked[:20]:
+                label = conn.execute(
+                    "SELECT label FROM whale_watchlist WHERE wallet = ?",
+                    (wallet,),
+                ).fetchone()
+                name = (label["label"] if label and label["label"] else wallet[:14])[:25]
+                click.echo(f"  {name:<25} ${expected:+10,.2f}")
     finally:
         conn.close()
 
