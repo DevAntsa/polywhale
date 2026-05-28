@@ -8,6 +8,8 @@ For wallets: the list is static because wallet addresses are stable
 across weeks (unlike market slugs).
 """
 
+import sqlite3
+
 from polywhale.polymarket import PolymarketClient
 
 
@@ -21,6 +23,30 @@ def fetch_default_market_slugs(client: PolymarketClient, *, top_n: int = 10) -> 
         closed=False, limit=max(top_n * 2, 30), order="volume24hr", ascending=False
     )
     return [m.slug for m in markets[:top_n]]
+
+
+def fetch_open_position_market_slugs(
+    conn: sqlite3.Connection, *, max_markets: int = 200
+) -> list[str]:
+    """Return distinct market slugs of markets where we currently hold open paper bets.
+
+    Used by `poly-watch --from-positions` so the book-snapshot timer covers the
+    exact markets we have skin in — enables intraday price tracking for
+    profit-take and momentum-exit rules.
+    """
+    rows = conn.execute(
+        """
+        SELECT DISTINCT market_slug
+        FROM poly_paper_bets
+        WHERE source = 'whale_copy'
+          AND settled_at IS NULL
+          AND market_slug IS NOT NULL
+        ORDER BY market_slug
+        LIMIT ?
+        """,
+        (max_markets,),
+    ).fetchall()
+    return [r[0] for r in rows]
 
 
 # Margin-ranked sharps from our own classifier (polywhale poly-whales).

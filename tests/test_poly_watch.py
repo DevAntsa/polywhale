@@ -3,6 +3,60 @@ from pathlib import Path
 from polywhale.db import connect, run_migrations
 from polywhale.poly_watch import WatchTarget, take_snapshot, watch_loop
 from polywhale.polymarket import PolyBook
+from polywhale.watchlist import fetch_open_position_market_slugs
+
+
+def test_fetch_open_position_market_slugs_returns_open_only(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        # Open whale_copy bet on m1
+        conn.execute(
+            "INSERT INTO poly_paper_bets(source, market_slug, token_id, side, "
+            "entry_price, size_shares, cost_usd, placed_at) "
+            "VALUES ('whale_copy', 'm1', 't1', 'YES', 0.4, 100, 40, 1)"
+        )
+        # Settled whale_copy bet on m2 - excluded
+        conn.execute(
+            "INSERT INTO poly_paper_bets(source, market_slug, token_id, side, "
+            "entry_price, size_shares, cost_usd, placed_at, settled_at, pnl_usd) "
+            "VALUES ('whale_copy', 'm2', 't2', 'YES', 0.4, 100, 40, 1, 100, 5)"
+        )
+        # Open combo_arb bet on m3 - different source, excluded
+        conn.execute(
+            "INSERT INTO poly_paper_bets(source, market_slug, token_id, side, "
+            "entry_price, size_shares, cost_usd, placed_at) "
+            "VALUES ('combo_arb', 'm3', 't3', 'YES', 0.4, 100, 40, 1)"
+        )
+        # Another open whale_copy bet on m1 - dedup expected
+        conn.execute(
+            "INSERT INTO poly_paper_bets(source, market_slug, token_id, side, "
+            "entry_price, size_shares, cost_usd, placed_at) "
+            "VALUES ('whale_copy', 'm1', 't1b', 'YES', 0.5, 100, 50, 1)"
+        )
+        conn.commit()
+        slugs = fetch_open_position_market_slugs(conn)
+        assert slugs == ["m1"]
+    finally:
+        conn.close()
+
+
+def test_fetch_open_position_market_slugs_respects_max(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        for i in range(10):
+            conn.execute(
+                "INSERT INTO poly_paper_bets(source, market_slug, token_id, side, "
+                "entry_price, size_shares, cost_usd, placed_at) "
+                "VALUES ('whale_copy', ?, ?, 'YES', 0.4, 100, 40, 1)",
+                (f"m{i:02d}", f"t{i:02d}"),
+            )
+        conn.commit()
+        slugs = fetch_open_position_market_slugs(conn, max_markets=3)
+        assert len(slugs) == 3
+    finally:
+        conn.close()
 
 
 class _StubClient:

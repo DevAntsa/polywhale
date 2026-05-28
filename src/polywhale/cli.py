@@ -149,7 +149,15 @@ def poly_book(settings: Settings, slug: str) -> None:
     "use_default",
     is_flag=True,
     default=False,
-    help="Use the curated default Polymarket watchlist.",
+    help="Add top-volume markets to the watch set (good for arb-scan context).",
+)
+@click.option(
+    "--from-positions",
+    "use_positions",
+    is_flag=True,
+    default=False,
+    help="Add markets where we currently hold open paper bets (enables intraday "
+         "price tracking on our own positions).",
 )
 @click.option("--interval", type=int, default=60, show_default=True)
 @click.option("--iterations", type=int, default=1, show_default=True, help="0 = loop forever.")
@@ -158,22 +166,30 @@ def poly_watch(
     settings: Settings,
     slugs: tuple[str, ...],
     use_default: bool,
+    use_positions: bool,
     interval: int,
     iterations: int,
 ) -> None:
     """Poll Polymarket order books for given slugs; persist depth snapshots."""
-    from polywhale.watchlist import fetch_default_market_slugs
+    from polywhale.watchlist import (
+        fetch_default_market_slugs,
+        fetch_open_position_market_slugs,
+    )
 
     conn = connect(settings.db_path)
     try:
         run_migrations(conn)
         with PolymarketClient() as client:
-            resolved: tuple[str, ...] = slugs
+            collected: list[str] = list(slugs)
             if use_default:
-                fetched = fetch_default_market_slugs(client, top_n=10)
-                resolved = tuple(list(slugs) + fetched)
+                collected += fetch_default_market_slugs(client, top_n=10)
+            if use_positions:
+                collected += fetch_open_position_market_slugs(conn)
+            # Dedup while preserving order
+            seen: set[str] = set()
+            resolved = tuple(s for s in collected if s and not (s in seen or seen.add(s)))
             if not resolved:
-                click.echo("No slugs given. Use --slug or --default.")
+                click.echo("No slugs given. Use --slug, --default, or --from-positions.")
                 return
             targets: list[WatchTarget] = []
             for slug in resolved:
