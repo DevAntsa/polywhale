@@ -158,6 +158,87 @@ def test_close_copy_bet_returns_none_if_no_open_bet(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_added_signal_tops_up_existing_bet(tmp_path: Path) -> None:
+    """ADDED signal on a market we already hold should top up the existing bet."""
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        # Open a NEW bet at 0.40
+        new_sig = _insert_signal(conn, wallet="0xw", asset_id="t1",
+                                 signal_type="new_position", current_price=0.40,
+                                 market_slug="m1")
+        place_copy_bet(conn, _row(conn, new_sig), bankroll_usd=2000.0, stake_pct=0.02)
+        n_initial = conn.execute(
+            "SELECT COUNT(*) FROM poly_paper_bets WHERE source = 'whale_copy'"
+        ).fetchone()[0]
+        assert n_initial == 1
+        # Whale ADDS — should top up, not create a new row
+        add_sig = _insert_signal(conn, wallet="0xw", asset_id="t1",
+                                 signal_type="added_size", current_price=0.50,
+                                 market_slug="m1", new_size=200_000, old_size=100_000)
+        place_copy_bet(conn, _row(conn, add_sig), bankroll_usd=2000.0, stake_pct=0.02)
+        n_after = conn.execute(
+            "SELECT COUNT(*) FROM poly_paper_bets WHERE source = 'whale_copy'"
+        ).fetchone()[0]
+        assert n_after == 1  # still one row
+        bet = conn.execute(
+            "SELECT * FROM poly_paper_bets WHERE source = 'whale_copy'"
+        ).fetchone()
+        assert bet["add_count"] == 1
+        # cost = original $10 + additional $10 = $20 (exploration stake at 0.5% of $2K)
+        assert abs(float(bet["cost_usd"]) - 20.0) < 0.5
+        assert float(bet["additions_total_usd"]) > 0
+        # entry vwap is between 0.40 and 0.50
+        assert 0.40 < float(bet["entry_price"]) < 0.50
+    finally:
+        conn.close()
+
+
+def test_added_with_no_existing_bet_opens_new(tmp_path: Path) -> None:
+    """If ADDED fires for a wallet+asset we have no open bet on, opens new bet."""
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        sig = _insert_signal(conn, wallet="0xw", asset_id="t1",
+                             signal_type="added_size", current_price=0.40,
+                             market_slug="m1", new_size=200_000, old_size=100_000)
+        assert place_copy_bet(conn, _row(conn, sig), bankroll_usd=2000.0, stake_pct=0.02)
+        bet = conn.execute(
+            "SELECT * FROM poly_paper_bets WHERE source = 'whale_copy'"
+        ).fetchone()
+        # Normal new bet, not a top-up
+        assert int(bet["add_count"] or 0) == 0
+    finally:
+        conn.close()
+
+
+def test_topup_vwap_computation(tmp_path: Path) -> None:
+    """VWAP must be the dollar-weighted average of original + addition."""
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        # Open at 0.40 with $10 → 25 shares
+        new_sig = _insert_signal(conn, wallet="0xw", asset_id="t1",
+                                 signal_type="new_position", current_price=0.40,
+                                 market_slug="m1")
+        place_copy_bet(conn, _row(conn, new_sig), bankroll_usd=2000.0, stake_pct=0.02)
+        # Add at 0.50 with $10 → 20 more shares
+        add_sig = _insert_signal(conn, wallet="0xw", asset_id="t1",
+                                 signal_type="added_size", current_price=0.50,
+                                 market_slug="m1", new_size=200_000, old_size=100_000)
+        place_copy_bet(conn, _row(conn, add_sig), bankroll_usd=2000.0, stake_pct=0.02)
+        bet = conn.execute(
+            "SELECT entry_price, size_shares, cost_usd FROM poly_paper_bets "
+            "WHERE source = 'whale_copy'"
+        ).fetchone()
+        # cost = $20, shares = 25 + 20 = 45, vwap = 20/45 ~= 0.4444
+        assert abs(float(bet["cost_usd"]) - 20.0) < 0.5
+        assert abs(float(bet["size_shares"]) - 45.0) < 1.0
+        assert abs(float(bet["entry_price"]) - 0.4444) < 0.02
+    finally:
+        conn.close()
+
+
 def test_process_copy_trades_handles_mixed_signals(tmp_path: Path) -> None:
     conn = connect(tmp_path / "t.sqlite")
     try:

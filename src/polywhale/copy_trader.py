@@ -158,8 +158,6 @@ def place_copy_bet(
 
     # Kelly-fractional sizing replaces the flat $40 stake. See whale_sizing.py
     # for math and references (Kelly 1956, Thorp 1969, MacLean/Thorp/Ziemba 2010).
-    # If Kelly returns 0 (drop rule fires), fall back to mechanical only when
-    # the whale has insufficient data — otherwise honor the skip.
     sizing = compute_kelly_stake(
         conn,
         signal_row["wallet"],
@@ -178,7 +176,32 @@ def place_copy_bet(
     if final_stake <= 0:
         return False
 
-    # Portfolio-level guards (max positions, deployment cap, same-market dedup)
+    # ADDED top-up: if signal is "added_size" AND we have an open bet for this
+    # whale on this asset, add to that position instead of opening a new row
+    # (which the same-market dedup would reject).
+    existing_for_topup = None
+    if signal_row["signal_type"] == "added_size":
+        existing_for_topup = find_open_bet_for_wallet_asset(
+            conn, signal_row["wallet"], asset_id
+        )
+
+    if existing_for_topup is not None:
+        # Top-up flow: still apply deployment cap (not same-market dedup)
+        deployed = current_deployed_usd(conn)
+        if deployed + final_stake > bankroll_usd:
+            logger.info(
+                "topup skipped (bankroll cap): deployed=$%.2f + new=$%.2f > $%.2f",
+                deployed, final_stake, bankroll_usd,
+            )
+            return False
+        return _apply_topup(
+            conn, existing_for_topup, signal_row,
+            additional_stake=final_stake,
+            current_price=float(price),
+            ai_advice=ai_advice,
+        )
+
+    # New position flow: portfolio guards (max positions, deploy cap, dedup)
     allowed, guard_reason = check_portfolio_guards(
         conn,
         proposed_stake=final_stake,
@@ -239,6 +262,81 @@ def place_copy_bet(
         "shares=%.1f @ %.4f",
         signal_row["signal_id"], signal_row["wallet"][:10], final_stake,
         mechanical_stake, ai_mult, shares, price,
+    )
+    return True
+
+
+def _apply_topup(
+    conn: sqlite3.Connection,
+    existing_bet: sqlite3.Row,
+    signal_row: sqlite3.Row,
+    *,
+    additional_stake: float,
+    current_price: float,
+    ai_advice: "AIAdvice | None" = None,
+) -> bool:
+    """Add to an existing copy position. VWAP the entry, increment add_count.
+
+    Existing entry_price is replaced by the volume-weighted average across the
+    original entry + this addition, so the eventual exit PnL math just works.
+    Notes column gets an appended "topup from sig_N" entry.
+    """
+    if additional_stake <= 0 or current_price <= 0:
+        return False
+    old_cost = float(existing_bet["cost_usd"])
+    old_shares = float(existing_bet["size_shares"])
+    additional_shares = additional_stake / current_price
+    new_cost = old_cost + additional_stake
+    new_shares = old_shares + additional_shares
+    new_vwap = new_cost / new_shares if new_shares > 0 else current_price
+    add_count = int(existing_bet["add_count"] or 0) + 1
+    additions_total = float(existing_bet["additions_total_usd"] or 0) + additional_stake
+    now = int(time.time())
+
+    # Append top-up note so we can audit
+    prev_notes = existing_bet["notes"] or ""
+    sep = "; " if prev_notes else ""
+    topup_note = (
+        f"topup_sig{signal_row['signal_id']}_+${additional_stake:.2f}"
+        f"@{current_price:.4f}"
+    )
+    new_notes = f"{prev_notes}{sep}{topup_note}"
+
+    conn.execute(
+        """
+        UPDATE poly_paper_bets SET
+            cost_usd = ?,
+            size_shares = ?,
+            entry_price = ?,
+            add_count = ?,
+            additions_total_usd = ?,
+            last_topup_at = ?,
+            notes = ?,
+            ai_multiplier = COALESCE(?, ai_multiplier),
+            ai_reason = COALESCE(?, ai_reason),
+            ai_confidence = COALESCE(?, ai_confidence)
+        WHERE bet_id = ?
+        """,
+        (
+            round(new_cost, 4),
+            round(new_shares, 6),
+            round(new_vwap, 6),
+            add_count,
+            round(additions_total, 4),
+            now,
+            new_notes[:500],
+            ai_advice.multiplier if ai_advice else None,
+            ai_advice.reason if ai_advice else None,
+            ai_advice.confidence if ai_advice else None,
+            existing_bet["bet_id"],
+        ),
+    )
+    conn.commit()
+    logger.info(
+        "topup_copy_bet bet=%d wallet=%s added=$%.2f shares=%.1f "
+        "new_vwap=%.4f total_cost=$%.2f adds=%d",
+        existing_bet["bet_id"], signal_row["wallet"][:10], additional_stake,
+        additional_shares, new_vwap, new_cost, add_count,
     )
     return True
 
@@ -320,6 +418,31 @@ def find_open_copy_bet_for_signal(
         "SELECT * FROM poly_paper_bets "
         "WHERE source = 'whale_copy' AND source_ref_id = ?",
         (signal_id,),
+    ).fetchone()
+
+
+def find_open_bet_for_wallet_asset(
+    conn: sqlite3.Connection, wallet: str, asset_id: str
+) -> sqlite3.Row | None:
+    """Find our open copy bet (if any) following the given whale on the given asset.
+
+    Used by the top-up flow on ADDED signals: when bossoskil1 adds to their
+    Yankees position, we should add to OUR Yankees position rather than open
+    a new row that the same-market dedup would reject anyway.
+    """
+    return conn.execute(
+        """
+        SELECT pb.* FROM poly_paper_bets pb
+        JOIN whale_signals ws ON pb.source_ref_id = ws.signal_id
+        WHERE pb.source = 'whale_copy'
+          AND pb.settled_at IS NULL
+          AND pb.frozen_at IS NULL
+          AND ws.wallet = ?
+          AND ws.asset_id = ?
+        ORDER BY pb.placed_at DESC
+        LIMIT 1
+        """,
+        (wallet, asset_id),
     ).fetchone()
 
 
