@@ -211,77 +211,83 @@ def format_signal_alert(
 def _format_single(
     r: sqlite3.Row, labels: dict[str, str], *, conn: sqlite3.Connection | None = None
 ) -> str:
+    """Compact 2-line alert: '<emoji> <whale> <action> · <size info> @ <price> · <paper>'
+    followed by the market title on its own line."""
     sig = r["signal_type"]
     emoji = SIGNAL_EMOJI.get(sig, "🐋")
     label = SIGNAL_LABEL.get(sig, sig.upper())
-    wallet_name = labels.get(r["wallet"]) or _short_addr(r["wallet"])
-    title = html.escape((r["title"] or "(unknown market)")[:80])
-    outcome = html.escape(r["outcome"] or "?")
+    wallet_name = html.escape(labels.get(r["wallet"]) or _short_addr(r["wallet"]))
+    title = html.escape((r["title"] or "(?)")[:70])
     new_size = r["new_size"]
     old_size = r["old_size"]
     if sig == "closed_position":
-        size_line = f"sold <b>{_fmt_size(old_size)}</b>"
+        size_part = f"was {_fmt_size(old_size)}"
     elif sig == "reduced_size":
-        size_line = (
-            f"<b>{_fmt_size(new_size)}</b> left "
-            f"(down from {_fmt_size(old_size)})"
-        )
+        size_part = f"{_fmt_size(new_size)}/{_fmt_size(old_size)}"
     elif sig == "added_size" and old_size:
-        size_line = (
-            f"<b>{_fmt_size(new_size)}</b> "
-            f"(up from {_fmt_size(old_size)})"
-        )
+        size_part = f"+{_fmt_size(new_size)} (was {_fmt_size(old_size)})"
     else:
-        size_line = f"size <b>{_fmt_size(new_size)}</b>"
-    price = r["current_price"]
-    lines = [
-        f"{emoji} <b>{label}</b> · 🐋 <b>{html.escape(wallet_name)}</b>",
-        f"📊 {title}",
-        f"   <b>{outcome}</b> · {size_line} · @ {_fmt_price(price)}",
-    ]
-    warn = _conviction_warning(r)
-    if warn:
-        lines.append(warn)
-    if conn is not None:
-        paper = _paper_trade_line(conn, r)
-        if paper:
-            lines.append(paper)
-    return "\n".join(lines)
+        size_part = _fmt_size(new_size)
+    price = _fmt_price(r["current_price"])
+    paper_tag = _paper_compact_inline(conn, r) if conn is not None else ""
+    head = (
+        f"{emoji} <b>{wallet_name}</b> {label} · {size_part} @ {price}"
+        f"{paper_tag}"
+    )
+    return f"{head}\n<i>{title}</i>"
+
+
+def _paper_compact_inline(
+    conn: sqlite3.Connection, signal_row: sqlite3.Row
+) -> str:
+    """Returns ' · 💰$40' for entries or ' · 💰+$15' for exits, empty if none."""
+    sig = signal_row["signal_type"]
+    if sig in ENTRY_SIGNAL_TYPES:
+        bet = find_open_copy_bet_for_signal(conn, signal_row["signal_id"])
+        if not bet:
+            return ""
+        return f" · 💰${float(bet['cost_usd']):.0f}"
+    if sig in EXIT_SIGNAL_TYPES:
+        bet = find_closed_copy_bet_by_exit_signal(conn, signal_row["signal_id"])
+        if not bet or bet["pnl_usd"] is None:
+            return ""
+        pnl = float(bet["pnl_usd"])
+        sign = "+" if pnl >= 0 else "-"
+        return f" · 💰{sign}${abs(pnl):.2f}"
+    return ""
 
 
 def _format_multi(
     rows: list[sqlite3.Row], labels: dict[str, str], *, conn: sqlite3.Connection | None = None
 ) -> str:
+    """Compact one-row-per-signal table for digest mode."""
     header = f"🐋 <b>{len(rows)} whale moves</b>"
     table_lines = []
     for r in rows[:10]:
         sig = r["signal_type"]
         emoji = SIGNAL_EMOJI.get(sig, "🐋")
-        label = SIGNAL_LABEL.get(sig, sig[:6])
-        who = (labels.get(r["wallet"]) or _short_addr(r["wallet"]))[:12]
-        outcome = (r["outcome"] or "?")[:10]
+        who = (labels.get(r["wallet"]) or _short_addr(r["wallet"]))[:11]
         if sig == "closed_position":
-            size = _fmt_size(r["old_size"]) + "↓"
+            size = "was " + _fmt_size(r["old_size"])
         elif sig == "reduced_size":
-            size = _fmt_size(r["new_size"]) + "↓"
+            size = _fmt_size(r["new_size"]) + " left"
         elif sig == "added_size":
-            size = _fmt_size(r["new_size"]) + "↑"
+            size = "+" + _fmt_size(r["new_size"])
         else:
             size = _fmt_size(r["new_size"])
         price = _fmt_price(r["current_price"])
-        title = (r["title"] or "")[:30]
-        paper_tag = _paper_trade_compact(conn, r) if conn is not None else ""
+        title = (r["title"] or "")[:32]
+        paper_tag = _paper_compact_inline(conn, r) if conn is not None else ""
+        # Strip leading " · " from paper_tag for the table column format
+        paper_short = paper_tag.replace(" · ", "").strip()
         table_lines.append(
-            f"{emoji} {label:<6} {who:<12} {outcome:<10} {size:>8} @ {price}  "
-            f"{title}{paper_tag}"
+            f"{emoji} {who:<11} {size:>10} @ {price}  {title}  {paper_short}"
         )
     body = html.escape("\n".join(table_lines))
     if len(rows) > 10:
-        body += html.escape(f"\n… and {len(rows) - 10} more")
-    chases = [r for r in rows if _conviction_warning(r) is not None]
-    footer = ""
-    if chases:
-        footer = f"\n⚠️ {len(chases)} flagged as possible chase (market already moved)"
+        body += html.escape(f"\n... +{len(rows) - 10} more")
+    chases = sum(1 for r in rows if _conviction_warning(r) is not None)
+    footer = f"\n⚠️ {chases} chase-flagged" if chases else ""
     return f"{header}\n<pre>{body}</pre>{footer}"
 
 

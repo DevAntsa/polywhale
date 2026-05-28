@@ -34,6 +34,7 @@ from polywhale.poly_paper import (
 )
 from polywhale.poly_watch import WatchTarget, watch_loop
 from polywhale.polymarket import PolymarketClient
+from polywhale.telegram_commander import process_pending
 from polywhale.walk_forward import format_summary as walk_forward_format
 from polywhale.walk_forward import walk_forward
 from polywhale.whale_alerter import _wallet_labels, send_signal_alerts
@@ -1170,6 +1171,32 @@ def walk_forward_cmd(
                 top_k=top_k, stake_usd=stake_usd,
             )
         click.echo(walk_forward_format(summary))
+    finally:
+        conn.close()
+
+
+@cli.command(name="telegram-poll")
+@click.option("--timeout", type=int, default=3, show_default=True,
+              help="Long-poll timeout for getUpdates (seconds).")
+@click.pass_obj
+def telegram_poll_cmd(settings: Settings, timeout: int) -> None:
+    """Poll Telegram for /commands and respond. Designed for 30s systemd timer."""
+    if not settings.telegram_bot_token or not settings.telegram_chat_id:
+        click.echo("Telegram not configured.")
+        return
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        result = process_pending(
+            conn,
+            token=settings.telegram_bot_token,
+            chat_id=settings.telegram_chat_id,
+            poll_timeout=timeout,
+        )
+        click.echo(
+            f"telegram-poll: processed={result['processed']} "
+            f"last_id={result['last_id']}"
+        )
     finally:
         conn.close()
 

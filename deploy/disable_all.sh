@@ -10,7 +10,7 @@
 set -u
 
 POLY_UNITS=(poly-watch poly-arbs poly-paper-settle)
-WHALE_UNITS=(whale-watch whale-signals whale-fast whale-refresh)
+WHALE_UNITS=(whale-watch whale-signals whale-fast whale-refresh telegram-poll)
 
 echo ">>> Disabling poly + whale timers/services..."
 for unit in "${POLY_UNITS[@]}" "${WHALE_UNITS[@]}"; do

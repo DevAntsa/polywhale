@@ -1,0 +1,11 @@
+[Unit]
+Description=Poll Telegram for /commands every 30 seconds
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=30s
+AccuracySec=5s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

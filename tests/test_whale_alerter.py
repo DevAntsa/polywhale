@@ -73,8 +73,7 @@ def test_format_single_signal_has_emoji_and_html(tmp_path: Path) -> None:
         rows = list(conn.execute("SELECT * FROM whale_signals"))
         out = _format_single(rows[0], {})
         assert "🟢" in out  # new_position emoji
-        assert "🐋" in out
-        assert "<b>NEW</b>" in out
+        assert "NEW" in out
         assert "Yankees" in out
         # Size formatted with K suffix
         assert "100.0K" in out
@@ -96,21 +95,21 @@ def test_format_single_html_escapes_market_title(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_format_single_conviction_warning_when_market_moved(tmp_path: Path) -> None:
+def test_format_single_conviction_warning_dropped_for_compactness(tmp_path: Path) -> None:
+    """New 2-line compact format drops chase warnings; user queries via /pnl."""
     conn = connect(tmp_path / "t.sqlite")
     try:
         run_migrations(conn)
-        # Market moved +12pp in last 24h, whale just bought -> chase flag
         _insert_signal(conn, recent_move_pct=0.12, conviction_discount=0.5)
         rows = list(conn.execute("SELECT * FROM whale_signals"))
         out = _format_single(rows[0], {})
-        assert "⚠️" in out
-        assert "chase" in out.lower()
+        # Compact format: just two lines, no chase warning bloat
+        assert out.count("\n") <= 1
     finally:
         conn.close()
 
 
-def test_format_single_exit_shows_sold_size(tmp_path: Path) -> None:
+def test_format_single_exit_shows_was_size(tmp_path: Path) -> None:
     conn = connect(tmp_path / "t.sqlite")
     try:
         run_migrations(conn)
@@ -123,14 +122,14 @@ def test_format_single_exit_shows_sold_size(tmp_path: Path) -> None:
         rows = list(conn.execute("SELECT * FROM whale_signals"))
         out = _format_single(rows[0], {})
         assert "🔴" in out
-        assert "<b>EXIT</b>" in out
-        assert "sold" in out
+        assert "EXIT" in out
+        assert "was" in out
         assert "250.0K" in out
     finally:
         conn.close()
 
 
-def test_format_single_trim_shows_left_and_was(tmp_path: Path) -> None:
+def test_format_single_trim_shows_size_ratio(tmp_path: Path) -> None:
     conn = connect(tmp_path / "t.sqlite")
     try:
         run_migrations(conn)
@@ -143,15 +142,14 @@ def test_format_single_trim_shows_left_and_was(tmp_path: Path) -> None:
         rows = list(conn.execute("SELECT * FROM whale_signals"))
         out = _format_single(rows[0], {})
         assert "➖" in out  # noqa: RUF001
-        assert "<b>TRIM</b>" in out
+        assert "TRIM" in out
         assert "50.0K" in out
         assert "200.0K" in out
-        assert "left" in out
     finally:
         conn.close()
 
 
-def test_format_single_added_shows_up_from(tmp_path: Path) -> None:
+def test_format_single_added_shows_was(tmp_path: Path) -> None:
     conn = connect(tmp_path / "t.sqlite")
     try:
         run_migrations(conn)
@@ -164,8 +162,8 @@ def test_format_single_added_shows_up_from(tmp_path: Path) -> None:
         rows = list(conn.execute("SELECT * FROM whale_signals"))
         out = _format_single(rows[0], {})
         assert "➕" in out  # noqa: RUF001
-        assert "<b>ADDED</b>" in out
-        assert "up from" in out
+        assert "ADDED" in out
+        assert "was" in out
         assert "200.0K" in out
         assert "50.0K" in out
     finally:

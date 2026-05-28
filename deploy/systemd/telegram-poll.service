@@ -1,0 +1,19 @@
+[Unit]
+Description=Polymarket copytrader - telegram-poll (/command bot listener)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/polymarket/app
+ExecStart=/opt/polymarket/venv/bin/polywhale telegram-poll --timeout 3
+StandardOutput=append:/opt/polymarket/logs/telegram-poll.log
+StandardError=append:/opt/polymarket/logs/telegram-poll.log
+TimeoutStartSec=30s
+
+MemoryMax=150M
+CPUQuota=20%
+
+NoNewPrivileges=true
+PrivateTmp=true
