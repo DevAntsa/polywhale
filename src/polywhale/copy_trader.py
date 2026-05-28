@@ -29,6 +29,10 @@ from polywhale.ai_advisor import (
     build_context_from_signal,
     call_advisor,
 )
+from polywhale.whale_sizing import (
+    check_portfolio_guards,
+    compute_kelly_stake,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -147,18 +151,43 @@ def place_copy_bet(
     conviction = signal_row["conviction_discount"]
     conviction_f = float(conviction) if conviction is not None else 1.0
     conv_mult = conviction_f if weight_by_conviction else 1.0
-    mechanical_stake = bankroll_usd * stake_pct * conv_mult
+
+    # Kelly-fractional sizing replaces the flat $40 stake. See whale_sizing.py
+    # for math and references (Kelly 1956, Thorp 1969, MacLean/Thorp/Ziemba 2010).
+    # If Kelly returns 0 (drop rule fires), fall back to mechanical only when
+    # the whale has insufficient data — otherwise honor the skip.
+    sizing = compute_kelly_stake(
+        conn,
+        signal_row["wallet"],
+        bankroll_usd=bankroll_usd,
+        conviction_multiplier=conv_mult,
+    )
+    if sizing.skipped:
+        logger.info(
+            "place_copy_bet skipped by kelly: wallet=%s %s",
+            signal_row["wallet"][:14], sizing.reason,
+        )
+        return False
+    mechanical_stake = sizing.stake_usd
     ai_mult = ai_advice.multiplier if ai_advice is not None else 1.0
     final_stake = mechanical_stake * ai_mult
     if final_stake <= 0:
         return False
-    deployed = current_deployed_usd(conn)
-    if deployed + final_stake > bankroll_usd:
+
+    # Portfolio-level guards (max positions, deployment cap, same-market dedup)
+    allowed, guard_reason = check_portfolio_guards(
+        conn,
+        proposed_stake=final_stake,
+        bankroll_usd=bankroll_usd,
+        market_slug=market_slug,
+        outcome=signal_row["outcome"],
+    )
+    if not allowed:
         logger.info(
-            "place_copy_bet skipped (bankroll full): deployed=$%.2f + new=$%.2f > $%.2f",
-            deployed, final_stake, bankroll_usd,
+            "place_copy_bet skipped by portfolio guard: %s", guard_reason,
         )
         return False
+
     shares = final_stake / float(price)
     now = int(time.time())
     conn.execute(

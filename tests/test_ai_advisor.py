@@ -1,4 +1,4 @@
-import json
+﻿import json
 from pathlib import Path
 
 import httpx
@@ -204,9 +204,10 @@ def test_advice_stored_with_paper_bet(tmp_path: Path) -> None:
             bankroll_usd=2000.0, stake_pct=0.02, ai_advice=advice,
         )
         bet = conn.execute("SELECT * FROM poly_paper_bets").fetchone()
-        # mechanical = 2000 * 0.02 * 1.0 = 40; final = 40 * 1.5 = 60
-        assert abs(float(bet["mechanical_stake"]) - 40.0) < 1e-3
-        assert abs(float(bet["cost_usd"]) - 60.0) < 1e-3
+        # Kelly exploration stake (no prior trades for this whale) = 0.5% x $2000 = $10
+        # AI multiplier 1.5 x $10 = $15
+        assert abs(float(bet["mechanical_stake"]) - 10.0) < 0.5
+        assert abs(float(bet["cost_usd"]) - 15.0) < 0.5
         assert bet["ai_multiplier"] == 1.5
         assert bet["ai_reason"] == "specialist match"
         assert bet["ai_confidence"] == "high"

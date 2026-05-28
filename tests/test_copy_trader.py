@@ -1,4 +1,4 @@
-import time
+﻿import time
 from pathlib import Path
 
 from polywhale.copy_trader import (
@@ -48,7 +48,8 @@ def _row(conn, signal_id: int):
     ).fetchone()
 
 
-def test_place_copy_bet_sizes_by_bankroll_pct(tmp_path: Path) -> None:
+def test_place_copy_bet_uses_exploration_stake_for_unknown_whale(tmp_path: Path) -> None:
+    """A whale with no prior closed bets gets the exploration stake (0.5% bankroll)."""
     conn = connect(tmp_path / "t.sqlite")
     try:
         run_migrations(conn)
@@ -58,9 +59,10 @@ def test_place_copy_bet_sizes_by_bankroll_pct(tmp_path: Path) -> None:
         assert place_copy_bet(conn, sig_row, bankroll_usd=2000.0, stake_pct=0.02)
         bet = find_open_copy_bet_for_signal(conn, sig_id)
         assert bet is not None
-        # 2000 * 0.02 * 1.0 (conviction) = 40 stake; shares = 40/0.40 = 100
-        assert abs(bet["cost_usd"] - 40.0) < 1e-3
-        assert abs(bet["size_shares"] - 100.0) < 1e-3
+        # Exploration stake = 0.5% x $2000 = $10
+        assert abs(bet["cost_usd"] - 10.0) < 0.5
+        # Shares = $10 / 0.40 = 25
+        assert abs(bet["size_shares"] - 25.0) < 1.0
         assert bet["source"] == "whale_copy"
         assert bet["source_ref_id"] == sig_id
     finally:
@@ -68,6 +70,7 @@ def test_place_copy_bet_sizes_by_bankroll_pct(tmp_path: Path) -> None:
 
 
 def test_place_copy_bet_weights_by_conviction(tmp_path: Path) -> None:
+    """Conviction discount halves the exploration stake."""
     conn = connect(tmp_path / "t.sqlite")
     try:
         run_migrations(conn)
@@ -77,8 +80,8 @@ def test_place_copy_bet_weights_by_conviction(tmp_path: Path) -> None:
         sig_row = _row(conn, sig_id)
         place_copy_bet(conn, sig_row, bankroll_usd=2000.0, stake_pct=0.02)
         bet = find_open_copy_bet_for_signal(conn, sig_id)
-        # 2000 * 0.02 * 0.5 = 20 stake
-        assert abs(bet["cost_usd"] - 20.0) < 1e-3
+        # 0.5% exploration x 0.5 conviction x $2000 = $5
+        assert abs(bet["cost_usd"] - 5.0) < 0.5
     finally:
         conn.close()
 
@@ -129,8 +132,8 @@ def test_close_copy_bet_computes_pnl(tmp_path: Path) -> None:
         exit_row = _row(conn, exit_sig)
         pnl = close_copy_bet(conn, exit_row)
         assert pnl is not None
-        # shares=100 at 0.40 entry, exit 0.55 -> pnl = (0.55 - 0.40) * 100 = 15
-        assert abs(pnl - 15.0) < 1e-3
+        # exploration stake $10 → 25 shares at 0.40 → pnl = 0.15 x 25 = $3.75
+        assert abs(pnl - 3.75) < 0.1
         # Bet now linked to the exit signal
         bet = find_closed_copy_bet_by_exit_signal(conn, exit_sig)
         assert bet is not None
@@ -159,55 +162,54 @@ def test_process_copy_trades_handles_mixed_signals(tmp_path: Path) -> None:
     conn = connect(tmp_path / "t.sqlite")
     try:
         run_migrations(conn)
+        # Different market_slugs so dedup doesn't reject the second one
         _insert_signal(conn, wallet="0xa", asset_id="ta", signal_type="new_position",
-                       current_price=0.30)
+                       current_price=0.30, market_slug="market_a")
         _insert_signal(conn, wallet="0xb", asset_id="tb", signal_type="new_position",
-                       current_price=0.50)
+                       current_price=0.50, market_slug="market_b")
         result = process_copy_trades(conn, bankroll_usd=2000.0, stake_pct=0.02)
         assert result["opened"] == 2
         assert result["closed"] == 0
 
         # Now process EXIT for one of them
         _insert_signal(conn, wallet="0xa", asset_id="ta", signal_type="closed_position",
-                       current_price=0.40, new_size=0, old_size=100_000)
+                       current_price=0.40, new_size=0, old_size=100_000,
+                       market_slug="market_a")
         result2 = process_copy_trades(conn, bankroll_usd=2000.0, stake_pct=0.02)
         assert result2["opened"] == 0
         assert result2["closed"] == 1
-        # Entry 0.30, exit 0.40, shares 40/0.30 ~= 133.33 -> pnl = 0.1 * 133.33 ~= 13.33
-        assert abs(result2["realized_pnl"] - 13.33) < 0.5
+        # Exploration stake $10 / 0.30 ~= 33.33 shares, pnl = 0.10 x 33.33 ~= $3.33
+        assert abs(result2["realized_pnl"] - 3.33) < 0.5
     finally:
         conn.close()
 
 
-def test_place_copy_bet_refuses_when_bankroll_full(tmp_path: Path) -> None:
-    """New bets are skipped once total open commitments would exceed bankroll."""
+def test_place_copy_bet_refuses_when_portfolio_cap_full(tmp_path: Path) -> None:
+    """New bets are skipped once 25% portfolio deployment cap is engaged."""
     conn = connect(tmp_path / "t.sqlite")
     try:
         run_migrations(conn)
-        # Tiny bankroll so we fill it fast
-        bankroll = 100.0
-        stake_pct = 0.40  # $40 per bet
-        # Place 2 bets (total $80) — should succeed
-        for i in range(2):
-            sig_id = _insert_signal(
-                conn, wallet=f"0xw{i}", asset_id=f"t{i}",
-                signal_type="new_position", current_price=0.40,
-            )
-            assert place_copy_bet(
-                conn, _row(conn, sig_id),
-                bankroll_usd=bankroll, stake_pct=stake_pct,
-            )
-        # Third bet (would push to $120) should be refused
+        # Bankroll $2000 → 25% cap = $500. Pre-populate $495 already deployed.
+        # Exploration stake on $2000 = $10. $495 + $10 = $505 > $500 → reject.
+        conn.execute(
+            "INSERT INTO poly_paper_bets(source, market_slug, token_id, side, "
+            "entry_price, size_shares, cost_usd, placed_at) "
+            "VALUES ('whale_copy', 'm0', 't0', 'YES', 0.4, 100, 495, 1)"
+        )
+        conn.commit()
         sig_id = _insert_signal(
-            conn, wallet="0xw3", asset_id="t3",
+            conn, wallet="0xnew", asset_id="t_new",
             signal_type="new_position", current_price=0.40,
+            market_slug="m_new",
         )
         assert not place_copy_bet(
             conn, _row(conn, sig_id),
-            bankroll_usd=bankroll, stake_pct=stake_pct,
+            bankroll_usd=2000.0, stake_pct=0.02,
         )
-        n = conn.execute("SELECT COUNT(*) FROM poly_paper_bets").fetchone()[0]
-        assert n == 2  # only 2 bets placed
+        n = conn.execute(
+            "SELECT COUNT(*) FROM poly_paper_bets WHERE source = 'whale_copy'"
+        ).fetchone()[0]
+        assert n == 1
     finally:
         conn.close()
 

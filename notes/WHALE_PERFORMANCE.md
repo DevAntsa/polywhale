@@ -148,6 +148,108 @@ plan around — it's the only one that tests out-of-sample.
 
 ---
 
+## 5-agent research findings (2026-05-28 evening)
+
+After Monte Carlo + walk-forward shipped, five parallel research agents dove
+into whale longevity, copy-trade crowding, whale identities, portfolio
+construction, and paper-to-real friction. **Several findings contradicted
+prior decisions and recalibrate our forecast.**
+
+### The single most important finding
+
+**`wokerjoesleeper` (0x63d43bbb87f8) is on Polymarket's OFFICIAL 26-address
+smart-money list.** 81% WR over **42,902 predictions** targeting low-probability
+markets. Our prior "$0 PnL pattern → drop" diagnosis was wrong. Their disciplined
+Kelly sizing on undervalued NOs is too small per-trade to surface as PnL at our
+60s polling cadence, but the underlying strategy is rigorous algo execution.
+
+**Status as of 2026-05-28**: marked `endorsed=1` via `polywhale watchlist-endorse`,
+exempt from auto-drop regardless of in-app PnL signals.
+
+### Whale identity surfacing
+
+| Whale | New intel | Action |
+|---|---|---|
+| wokerjoesleeper | Polymarket-26-list, 81% WR algo | Keep + endorsed |
+| VPenguin | **@Vlad_kori on X** (public handle) | Monitor X timeline |
+| kch123 | 2,932 trades / 87% sports / market-maker style | Highest legitimacy among non-dormant |
+| Théo network | Theo4, Fredi9999, RepTrump, Len9311238 confirmed dormant since Nov 2024 (French ANJ regulatory action) | Stop tracking unless 2028 cycle |
+| EB99999, nojnn, strike123 | Heavy on Iran markets — CNN/Bubblemaps flagged 93% Iran insider | Risk-flagged `iran-cluster` |
+| bossoskil1 | Lost $2.36M in 8 days Jan 2026 | High variance, not skill — cap exposure |
+| saintQ | 1,771 predictions, biggest win only $4.5K, 0 profile views | Likely low-stake bot, edge probably noise |
+
+### Whale longevity (Akey et al. 2026 anchor)
+
+The only rigorous Polymarket survivorship study:
+- Only **12% of biggest-profit winners** pass a randomized skill test
+- **~60% of "lucky winners" flip to losers** on held-out events
+- Top-50 leaderboard turns over substantially — 2024 election names mostly
+  gone from current monthly rankings
+
+**Implication**: walk-forward $85/wk likely overstates by **30-50% at 12mo**,
+**50-75% at 24mo** unless we actively rotate the watchlist quarterly.
+
+### Paper-to-real friction (the hard reality check)
+
+```
+Polymarket round-trip fees (blended sports + politics): 1.4-1.8%
+Slippage at $40 stake:                                  0-0.3%
+Latency drag (60s cadence):                             0.3-0.7%
+Other (failed fills, gas):                              0.2-0.3%
+TOTAL realistic friction:                               ~2.6%
+
+Our paper gross edge per trade:                         1.6% ($0.65/$40)
+```
+
+**Friction exceeds gross edge by 1pp** in realistic taker-only execution.
+Mitigations: maker-side routing (resting limit orders for rebates), category
+filtering to sports + politics, more selective signals.
+
+**Realistic real-money expectation: $30-50/wk**, not $85/wk.
+
+### Recalibrated timeline
+
+- Path to $5K/mo income now **18-30 months** at $2K/mo salary additions
+  (previously planned at 14-18 months)
+- "Soon" means 18+ months, not 6
+- Critical to build friction measurement BEFORE any real-money pilot
+
+### Portfolio construction (Kelly fractional)
+
+Recommended sizing formula (replaces flat $40 stake):
+```
+stake = bankroll × 0.25 × max(0, (μ − fees) / σ²)
+```
+
+Sample-size shrinkage:
+- n < 10 trades: 0.5% exploration stake
+- 10 ≤ n < 30: linear shrinkage `(n−10)/20` toward Kelly
+- n ≥ 30: full 1/4 Kelly
+
+Portfolio caps:
+- Max 10 concurrent positions
+- Max 25% bankroll deployed
+- Max 25% per category
+- Hard cap 2.5% bankroll per single bet
+- Same-(market, side) dedup
+
+Drop if: `μ − 2σ/√n ≤ −fees`
+
+### Polymarket's 26-address smart-money specialists to add
+
+These are endorsed by Polymarket itself with high category WR:
+- HondaCivic — 85.7% weather
+- cowcat — 88% Middle East geopolitics
+- ewelmealt — ~100% soccer
+- middleoftheocean — 83.1% soccer
+- Big.Chungus — 73.7% box office
+- George.Smiley — 76% AI/tech
+
+Full wallet addresses in Odaily / Phemex coverage; pull via
+`polywhale watchlist-add` then `polywhale watchlist-endorse`.
+
+---
+
 ## How to refresh this file
 
 Run from anywhere with the DB:
