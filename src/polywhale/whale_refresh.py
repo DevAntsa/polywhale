@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from polywhale.polymarket import PolymarketClient
 from polywhale.watchlist import MARGIN_RANKED_SHARPS, POLYWHALER_SHARPS
 from polywhale.whale_classify import SHAPE_SHARP, fetch_and_classify, persist_profiles
+from polywhale.whale_review import auto_drop, evaluate_all_active
 from polywhale.whale_stats import compute_activity_stats, passes_activity_filter
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ class RefreshResult:
     active_total: int
     rejected_activity: int = 0
     backfilled_stats: int = 0
+    review_dropped: int = 0
 
 
 def seed_from_static(conn: sqlite3.Connection) -> int:
@@ -67,6 +69,11 @@ def refresh_watchlist(
     min_wr_sample: int = 20,
     window: str = "30d",
     top_n: int = 100,
+    with_review: bool = True,
+    review_min_trades: int = 25,
+    review_loss_threshold: float = -30.0,
+    review_zero_epsilon: float = 0.20,
+    review_max_quiet_days: int = 21,
 ) -> RefreshResult:
     """Pull leaderboard, upsert qualifying sharps, deactivate dormant auto entries.
 
@@ -177,6 +184,22 @@ def refresh_watchlist(
     update_activity_stats(conn)
     deactivated = mark_dormant_auto(conn, days=max_dormant_days)
 
+    review_dropped = 0
+    if with_review:
+        reviews = evaluate_all_active(
+            conn,
+            min_trades_to_judge=review_min_trades,
+            loss_threshold=review_loss_threshold,
+            zero_pnl_epsilon=review_zero_epsilon,
+            max_quiet_days=review_max_quiet_days,
+        )
+        droppable = [r for r in reviews if r.recommendation in ("drop", "drop_dormant")]
+        if droppable:
+            dropped_wallets = auto_drop(conn, droppable)
+            review_dropped = len(dropped_wallets)
+            for w in dropped_wallets:
+                logger.info("whale-review auto-dropped: %s", w[:14])
+
     active_total = conn.execute(
         "SELECT COUNT(*) FROM whale_watchlist WHERE active = 1"
     ).fetchone()[0]
@@ -189,6 +212,7 @@ def refresh_watchlist(
         active_total=int(active_total),
         rejected_activity=rejected_activity,
         backfilled_stats=backfilled,
+        review_dropped=review_dropped,
     )
 
 

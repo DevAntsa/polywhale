@@ -42,6 +42,7 @@ from polywhale.whale_refresh import (
     update_activity_stats,
     upsert_manual,
 )
+from polywhale.whale_review import auto_drop, evaluate_all_active
 from polywhale.whale_watch import prune_old_snapshots, snapshot_wallet, watch_wallets
 
 logger = logging.getLogger("polywhale")
@@ -728,6 +729,7 @@ def whale_refresh_cmd(
         click.echo(f"  rejected by activity/WR   : {result.rejected_activity}")
         click.echo(f"  backfilled stats          : {result.backfilled_stats}")
         click.echo(f"  dormant auto deactivated  : {result.deactivated}")
+        click.echo(f"  review auto-dropped       : {result.review_dropped}")
         click.echo(f"  active watchlist total    : {result.active_total}")
     finally:
         conn.close()
@@ -789,6 +791,81 @@ def watchlist_cmd(settings: Settings, show_all: bool, no_refresh_stats: bool) ->
                 f"{r['wallet'][:14]:<14} {label:<18} {margin:>7} {profit:>11} "
                 f"{sigs:>6} {wr:>5} {wr_n:>4} "
                 f"{_age(r['last_trade_at']):<10} {_age(r['last_signal_at']):<10}"
+            )
+    finally:
+        conn.close()
+
+
+@cli.command(name="whale-review")
+@click.option("--auto-drop", "do_drop", is_flag=True, default=False,
+              help="Actually deactivate whales recommended for drop. Default: preview only.")
+@click.option("--min-trades", type=int, default=25, show_default=True,
+              help="Minimum closed paper-copy trades before tier D/A is even considered.")
+@click.option("--loss-threshold", type=float, default=-30.0, show_default=True,
+              help="Realized PnL <= this triggers tier D (drop).")
+@click.option("--zero-epsilon", type=float, default=0.20, show_default=True,
+              help="|avg pnl/trade| <= this with enough samples triggers tier D.")
+@click.option("--max-quiet-days", type=int, default=21, show_default=True,
+              help="No signals in N days + insufficient samples = tier E (drop dormant).")
+@click.option("--boost-threshold", type=float, default=200.0, show_default=True,
+              help="Realized PnL >= this with >= min-trades triggers tier A (boost candidate).")
+@click.pass_obj
+def whale_review_cmd(
+    settings: Settings, do_drop: bool, min_trades: int, loss_threshold: float,
+    zero_epsilon: float, max_quiet_days: int, boost_threshold: float,
+) -> None:
+    """Score every active whale and recommend keep/drop based on observed paper PnL."""
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        reviews = evaluate_all_active(
+            conn,
+            min_trades_to_judge=min_trades,
+            loss_threshold=loss_threshold,
+            zero_pnl_epsilon=zero_epsilon,
+            max_quiet_days=max_quiet_days,
+            boost_threshold=boost_threshold,
+            boost_min_trades=min_trades,
+        )
+        # Sort by tier (A best, E worst), then by PnL within tier
+        tier_order = {"A": 0, "B": 1, "C": 2, "D": 3, "E": 4}
+        reviews.sort(key=lambda r: (tier_order.get(r.tier, 9), -r.realized_pnl_all))
+        click.echo(
+            f"=== Whale Review ({len(reviews)} active) ===\n"
+            f"  min-trades={min_trades}  loss<={loss_threshold}  "
+            f"zero-eps={zero_epsilon}  dormant>{max_quiet_days}d\n"
+        )
+        click.echo(
+            f"  {'tier':<4} {'whale':<22} {'trades':>6} {'W/L':>7} {'PnL':>10} "
+            f"{'avg':>8} {'rec':<14}  reason"
+        )
+        counts: dict[str, int] = {}
+        for r in reviews:
+            counts[r.tier] = counts.get(r.tier, 0) + 1
+            who = (r.label or r.wallet[:14])[:22]
+            wl_str = f"{r.wins}/{r.losses}"
+            avg = (
+                f"${r.avg_pnl_per_trade:+.2f}"
+                if r.avg_pnl_per_trade is not None
+                else "-"
+            )
+            click.echo(
+                f"  {r.tier:<4} {who:<22} {r.closed_trades_all:>6} {wl_str:>7} "
+                f"${r.realized_pnl_all:+8.2f} {avg:>8} {r.recommendation:<14}  "
+                f"{r.reason[:80]}"
+            )
+        click.echo(
+            "\n  Tier counts: "
+            + ", ".join(f"{t}={counts.get(t, 0)}" for t in ("A", "B", "C", "D", "E"))
+        )
+        droppable = [r for r in reviews if r.recommendation in ("drop", "drop_dormant")]
+        if do_drop and droppable:
+            dropped = auto_drop(conn, droppable)
+            click.echo(f"\n  AUTO-DROPPED {len(dropped)} whale(s).")
+        elif droppable and not do_drop:
+            click.echo(
+                f"\n  {len(droppable)} whale(s) recommended for drop. "
+                "Re-run with --auto-drop to apply."
             )
     finally:
         conn.close()
