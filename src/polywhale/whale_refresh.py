@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from polywhale.polymarket import PolymarketClient
 from polywhale.watchlist import MARGIN_RANKED_SHARPS, POLYWHALER_SHARPS
 from polywhale.whale_classify import SHAPE_SHARP, fetch_and_classify, persist_profiles
+from polywhale.whale_stats import compute_activity_stats, passes_activity_filter
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,8 @@ class RefreshResult:
     updated: int
     deactivated: int
     active_total: int
+    rejected_activity: int = 0
+    backfilled_stats: int = 0
 
 
 def seed_from_static(conn: sqlite3.Connection) -> int:
@@ -60,10 +63,21 @@ def refresh_watchlist(
     min_profit_usd: float = 50_000.0,
     min_volume_usd: float = 1_000_000.0,
     max_dormant_days: int = 14,
+    min_wr_pct: float = 60.0,
+    min_wr_sample: int = 20,
     window: str = "30d",
     top_n: int = 100,
 ) -> RefreshResult:
-    """Pull leaderboard, upsert qualifying sharps, deactivate dormant auto entries."""
+    """Pull leaderboard, upsert qualifying sharps, deactivate dormant auto entries.
+
+    Two-pass filter:
+      1. Margin/profit/volume from lb-api (cheap, batch).
+      2. Activity + WR per candidate via data-api/activity (1 call per candidate
+         that passes step 1). Rejects dormant or low-WR candidates.
+
+    Manual entries (source='manual') keep getting their stats backfilled but
+    are never rejected by the activity filter.
+    """
     count = conn.execute("SELECT COUNT(*) FROM whale_watchlist").fetchone()[0]
     seeded = seed_from_static(conn) if count == 0 else 0
 
@@ -75,6 +89,7 @@ def refresh_watchlist(
     now = int(time.time())
     added = 0
     updated = 0
+    rejected_activity = 0
     for p in profiles:
         if p.shape != SHAPE_SHARP:
             continue
@@ -86,7 +101,51 @@ def refresh_watchlist(
         existing = conn.execute(
             "SELECT wallet FROM whale_watchlist WHERE wallet = ?", (wallet,)
         ).fetchone()
-        if existing:
+        # Activity check happens for new candidates only — existing entries
+        # keep their slot regardless (they already proved themselves via the
+        # observed signal stream).
+        if not existing:
+            stats = compute_activity_stats(client, wallet)
+            passes, reason = passes_activity_filter(
+                stats,
+                max_dormant_days=max_dormant_days,
+                min_wr_pct=min_wr_pct,
+                min_sample=min_wr_sample,
+                now_ts=now,
+            )
+            if not passes:
+                logger.info(
+                    "whale-refresh rejected %s: %s (margin=%.1f profit=$%.0f wr=%s)",
+                    p.pseudonym or wallet[:14], reason, p.margin_pct, p.profit,
+                    stats.win_rate_pct,
+                )
+                rejected_activity += 1
+                continue
+            conn.execute(
+                """
+                INSERT INTO whale_watchlist(
+                    wallet, label, source, added_at, last_classified_at,
+                    margin_pct, profit_usd, volume_usd, shape, active,
+                    win_rate_pct, wr_sample_size, last_trade_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                """,
+                (
+                    wallet,
+                    p.pseudonym or p.name,
+                    SOURCE_AUTO_MARGIN,
+                    now,
+                    now,
+                    p.margin_pct,
+                    p.profit,
+                    p.volume,
+                    p.shape,
+                    stats.win_rate_pct,
+                    stats.sample_size,
+                    stats.last_trade_at,
+                ),
+            )
+            added += 1
+        else:
             conn.execute(
                 """
                 UPDATE whale_watchlist SET
@@ -112,29 +171,9 @@ def refresh_watchlist(
                 ),
             )
             updated += 1
-        else:
-            conn.execute(
-                """
-                INSERT INTO whale_watchlist(
-                    wallet, label, source, added_at, last_classified_at,
-                    margin_pct, profit_usd, volume_usd, shape, active
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                """,
-                (
-                    wallet,
-                    p.pseudonym or p.name,
-                    SOURCE_AUTO_MARGIN,
-                    now,
-                    now,
-                    p.margin_pct,
-                    p.profit,
-                    p.volume,
-                    p.shape,
-                ),
-            )
-            added += 1
     conn.commit()
 
+    backfilled = backfill_activity_stats_for_watchlist(conn, client)
     update_activity_stats(conn)
     deactivated = mark_dormant_auto(conn, days=max_dormant_days)
 
@@ -148,7 +187,40 @@ def refresh_watchlist(
         updated=updated,
         deactivated=deactivated,
         active_total=int(active_total),
+        rejected_activity=rejected_activity,
+        backfilled_stats=backfilled,
     )
+
+
+def backfill_activity_stats_for_watchlist(
+    conn: sqlite3.Connection,
+    client: PolymarketClient,
+) -> int:
+    """Refresh win_rate_pct + last_trade_at on every active watchlist entry.
+
+    Run during whale-refresh so the watchlist always shows current stats,
+    not numbers frozen at the time the wallet was added.
+    """
+    rows = conn.execute(
+        "SELECT wallet FROM whale_watchlist WHERE active = 1"
+    ).fetchall()
+    updated = 0
+    for r in rows:
+        stats = compute_activity_stats(client, r["wallet"])
+        conn.execute(
+            "UPDATE whale_watchlist SET "
+            "win_rate_pct = ?, wr_sample_size = ?, last_trade_at = ? "
+            "WHERE wallet = ?",
+            (
+                stats.win_rate_pct,
+                stats.sample_size,
+                stats.last_trade_at,
+                r["wallet"],
+            ),
+        )
+        updated += 1
+    conn.commit()
+    return updated
 
 
 def update_activity_stats(conn: sqlite3.Connection, *, window_days: int = 30) -> int:

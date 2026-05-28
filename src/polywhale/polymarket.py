@@ -250,6 +250,19 @@ class PolymarketClient:
         data = resp.json()
         return [parse_position(raw) for raw in data]
 
+    def get_activity(self, wallet: str, *, limit: int = 500) -> list[dict]:
+        """Pull a wallet's recent activity (trades, redemptions, rebates).
+
+        Returns raw dicts with keys including: type, timestamp, conditionId,
+        price, side, outcome, size, slug, title. Caps at API max of ~500.
+        """
+        resp = self._data.get(
+            "/activity", params={"user": wallet, "limit": str(limit)}
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, list) else []
+
 
 def parse_market(raw: dict) -> PolyMarket:
     outcomes_raw = raw.get("outcomes") or "[]"

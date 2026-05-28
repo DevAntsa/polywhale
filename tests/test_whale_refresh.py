@@ -16,8 +16,24 @@ from polywhale.whale_refresh import (
 
 
 class _StubClient:
-    def __init__(self, profiles: list[WhaleProfile]) -> None:
+    def __init__(
+        self,
+        profiles: list[WhaleProfile],
+        activity_events: list[dict] | None = None,
+    ) -> None:
         self._profiles = profiles
+        # Default to high-quality activity so test candidates pass the new filter
+        if activity_events is None:
+            activity_events = []
+            for i in range(25):
+                activity_events.append(
+                    {"type": "TRADE", "conditionId": f"m{i}", "timestamp": int(time.time())}
+                )
+            for i in range(18):
+                activity_events.append(
+                    {"type": "REDEEM", "conditionId": f"m{i}", "timestamp": int(time.time())}
+                )
+        self._activity = activity_events
 
     def get_leaderboard(self, metric: str, *, window: str = "30d"):
         # Build LeaderboardRow-shaped objects from the profile list
@@ -31,6 +47,9 @@ class _StubClient:
             LeaderboardRow(wallet=p.wallet, pseudonym=p.pseudonym, name=p.name, amount=p.volume)
             for p in self._profiles
         ]
+
+    def get_activity(self, wallet: str, *, limit: int = 500) -> list[dict]:
+        return self._activity
 
 
 def _profile(wallet, profit, volume, pseudonym=None):

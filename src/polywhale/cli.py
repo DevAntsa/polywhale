@@ -687,7 +687,12 @@ def whale_fast_cmd(
 @click.option("--min-volume", type=float, default=1_000_000.0, show_default=True,
               help="Minimum volume (USD) to qualify (filters lucky small samples).")
 @click.option("--max-dormant-days", type=int, default=14, show_default=True,
-              help="Deactivate auto-discovered wallets with no activity in N days.")
+              help="Reject candidates with no trades in N days. Also deactivates "
+                   "auto-discovered watchlist entries that went silent for N days.")
+@click.option("--min-wr", type=float, default=60.0, show_default=True,
+              help="Minimum approx win rate %% (computed from REDEEMs per market).")
+@click.option("--min-wr-sample", type=int, default=20, show_default=True,
+              help="Minimum unique markets traded for WR to be considered.")
 @click.option("--top", "top_n", type=int, default=100, show_default=True,
               help="How deep to scan the leaderboard.")
 @click.pass_obj
@@ -697,6 +702,8 @@ def whale_refresh_cmd(
     min_profit: float,
     min_volume: float,
     max_dormant_days: int,
+    min_wr: float,
+    min_wr_sample: int,
     top_n: int,
 ) -> None:
     """Auto-discover new sharps from the leaderboard; deactivate dormant auto entries."""
@@ -710,14 +717,18 @@ def whale_refresh_cmd(
                 min_profit_usd=min_profit,
                 min_volume_usd=min_volume,
                 max_dormant_days=max_dormant_days,
+                min_wr_pct=min_wr,
+                min_wr_sample=min_wr_sample,
                 top_n=top_n,
             )
         click.echo("whale-refresh:")
-        click.echo(f"  seeded (first run)       : {result.seeded}")
-        click.echo(f"  new auto-sharps added    : {result.added}")
-        click.echo(f"  existing entries updated : {result.updated}")
-        click.echo(f"  dormant auto deactivated : {result.deactivated}")
-        click.echo(f"  active watchlist total   : {result.active_total}")
+        click.echo(f"  seeded (first run)        : {result.seeded}")
+        click.echo(f"  new auto-sharps added     : {result.added}")
+        click.echo(f"  existing entries updated  : {result.updated}")
+        click.echo(f"  rejected by activity/WR   : {result.rejected_activity}")
+        click.echo(f"  backfilled stats          : {result.backfilled_stats}")
+        click.echo(f"  dormant auto deactivated  : {result.deactivated}")
+        click.echo(f"  active watchlist total    : {result.active_total}")
     finally:
         conn.close()
 
@@ -739,7 +750,8 @@ def watchlist_cmd(settings: Settings, show_all: bool, no_refresh_stats: bool) ->
             update_activity_stats(conn)
         sql = (
             "SELECT wallet, label, source, margin_pct, profit_usd, "
-            "signals_30d, last_signal_at, active, deactivated_reason "
+            "signals_30d, last_signal_at, win_rate_pct, wr_sample_size, "
+            "last_trade_at, active, deactivated_reason "
             "FROM whale_watchlist"
         )
         if not show_all:
@@ -753,26 +765,30 @@ def watchlist_cmd(settings: Settings, show_all: bool, no_refresh_stats: bool) ->
             click.echo("Watchlist is empty. Run `polywhale whale-refresh` first.")
             return
         now = int(_time.time())
+
+        def _age(ts: int | None) -> str:
+            if not ts:
+                return "-"
+            h = (now - int(ts)) / 3600.0
+            return f"{h:.1f}h" if h < 24 else f"{h / 24:.1f}d"
+
         click.echo(
-            f"{'wallet':<14} {'label':<22} {'src':<13} {'margin%':>8} "
-            f"{'profit':>12} {'sigs30':>7} {'last_sig':<12} {'state':<10}"
+            f"{'wallet':<14} {'label':<18} {'margin%':>7} "
+            f"{'profit':>11} {'sigs30':>6} {'WR':>5} {'n':>4} "
+            f"{'last_trade':<10} {'last_sig':<10}"
         )
         for r in rows:
-            label = (r["label"] or "")[:22]
+            label = (r["label"] or "")[:18]
             margin = f"{r['margin_pct']:.1f}" if r["margin_pct"] is not None else "-"
             profit = f"${r['profit_usd']:,.0f}" if r["profit_usd"] is not None else "-"
             sigs = r["signals_30d"] or 0
-            last_sig = "-"
-            if r["last_signal_at"]:
-                age_h = (now - int(r["last_signal_at"])) / 3600.0
-                if age_h < 24:
-                    last_sig = f"{age_h:.1f}h ago"
-                else:
-                    last_sig = f"{age_h / 24:.1f}d ago"
-            state = "active" if r["active"] else (r["deactivated_reason"] or "inactive")
+            wr_val = r["win_rate_pct"]
+            wr = f"{wr_val:.0f}%" if wr_val is not None else "-"
+            wr_n = r["wr_sample_size"] or 0
             click.echo(
-                f"{r['wallet'][:14]:<14} {label:<22} {r['source']:<13} "
-                f"{margin:>8} {profit:>12} {sigs:>7} {last_sig:<12} {state:<10}"
+                f"{r['wallet'][:14]:<14} {label:<18} {margin:>7} {profit:>11} "
+                f"{sigs:>6} {wr:>5} {wr_n:>4} "
+                f"{_age(r['last_trade_at']):<10} {_age(r['last_signal_at']):<10}"
             )
     finally:
         conn.close()
