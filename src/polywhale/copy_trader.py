@@ -29,6 +29,10 @@ from polywhale.ai_advisor import (
     build_context_from_signal,
     call_advisor,
 )
+from polywhale.friction_observer import (
+    snapshot_entry_friction,
+    snapshot_exit_friction,
+)
 from polywhale.whale_sizing import (
     check_portfolio_guards,
     compute_kelly_stake,
@@ -190,7 +194,7 @@ def place_copy_bet(
 
     shares = final_stake / float(price)
     now = int(time.time())
-    conn.execute(
+    cur = conn.execute(
         """
         INSERT INTO poly_paper_bets(
             source, source_ref_id, market_slug, event_slug, token_id,
@@ -216,7 +220,20 @@ def place_copy_bet(
             ai_advice.confidence if ai_advice else None,
         ),
     )
+    bet_id = cur.lastrowid
     conn.commit()
+
+    # Friction instrumentation: best-effort, never blocks the bet
+    if bet_id:
+        try:
+            snapshot_entry_friction(
+                conn, bet_id=bet_id, asset_id=asset_id,
+                signal_ts=int(signal_row["detected_at"] or now),
+                paper_entry_price=float(price),
+            )
+        except Exception as exc:
+            logger.warning("friction entry snapshot failed: %s", exc)
+
     logger.info(
         "place_copy_bet signal=%d wallet=%s stake=$%.2f (mech=$%.2f x ai=%.2f) "
         "shares=%.1f @ %.4f",
@@ -277,6 +294,17 @@ def close_copy_bet(
         ),
     )
     conn.commit()
+
+    # Friction instrumentation on exit: best-effort
+    try:
+        snapshot_exit_friction(
+            conn, bet_id=int(open_bet["bet_id"]), asset_id=asset_id,
+            signal_ts=int(signal_row["detected_at"] or now),
+            paper_exit_price=float(exit_price),
+        )
+    except Exception as exc:
+        logger.warning("friction exit snapshot failed: %s", exc)
+
     logger.info(
         "close_copy_bet signal=%d wallet=%s entry=%.4f exit=%.4f shares=%.1f pnl=$%.2f",
         signal_row["signal_id"], wallet[:10], entry_price, exit_price, shares, pnl,

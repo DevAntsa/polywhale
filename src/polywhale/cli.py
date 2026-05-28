@@ -18,6 +18,7 @@ from polywhale.backtest import (
 from polywhale.config import Settings
 from polywhale.copy_trader import copy_trade_stats, process_copy_trades
 from polywhale.db import connect, run_migrations
+from polywhale.friction_observer import compute_friction_report
 from polywhale.historical_backfill import backfill_all_watchlist, backfill_wallet_activity
 from polywhale.historical_backtest import backtest_all_wallets
 from polywhale.logging_setup import configure as configure_logging
@@ -1169,6 +1170,48 @@ def walk_forward_cmd(
                 top_k=top_k, stake_usd=stake_usd,
             )
         click.echo(walk_forward_format(summary))
+    finally:
+        conn.close()
+
+
+@cli.command(name="friction-report")
+@click.pass_obj
+def friction_report_cmd(settings: Settings) -> None:
+    """Slippage + paper-to-real edge retention report from copy bets."""
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        rpt = compute_friction_report(conn)
+        if rpt.get("covered_bets", 0) == 0:
+            click.echo("=== Friction Report ===")
+            click.echo(f"  total closed bets : {rpt.get('total_closed_bets', 0)}")
+            click.echo("  with book coverage: 0")
+            click.echo(f"  {rpt.get('message', '')}")
+            return
+        click.echo(f"=== Friction Report ({rpt['covered_bets']} bets with book coverage) ===")
+        click.echo(f"  of {rpt['total_closed_bets']} total closed copy bets")
+        click.echo()
+        es_n = rpt["entry_slippage_observations"]
+        if es_n:
+            click.echo(f"Entry slippage ({es_n} observations):")
+            click.echo(f"  mean   : {rpt['entry_slippage_mean_pct']}%")
+            click.echo(f"  median : {rpt['entry_slippage_median_pct']}%")
+            click.echo(f"  p95    : {rpt['entry_slippage_p95_pct']}%")
+        xs_n = rpt["exit_slippage_observations"]
+        if xs_n:
+            click.echo()
+            click.echo(f"Exit slippage ({xs_n} observations):")
+            click.echo(f"  mean   : {rpt['exit_slippage_mean_pct']}%")
+            click.echo(f"  median : {rpt['exit_slippage_median_pct']}%")
+            click.echo(f"  p95    : {rpt['exit_slippage_p95_pct']}%")
+        if rpt["real_pnl_observations"] > 0:
+            click.echo()
+            click.echo("Paper vs hypothetical real PnL:")
+            click.echo(f"  paper      : ${rpt['paper_pnl_total']:+,.2f}")
+            click.echo(f"  real (est) : ${rpt['hypothetical_real_pnl_total']:+,.2f}")
+            ret = rpt.get("edge_retention_pct")
+            if ret is not None:
+                click.echo(f"  retention  : {ret}%")
     finally:
         conn.close()
 
