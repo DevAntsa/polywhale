@@ -33,6 +33,8 @@ from polywhale.poly_paper import (
 )
 from polywhale.poly_watch import WatchTarget, watch_loop
 from polywhale.polymarket import PolymarketClient
+from polywhale.walk_forward import format_summary as walk_forward_format
+from polywhale.walk_forward import walk_forward
 from polywhale.whale_alerter import _wallet_labels, send_signal_alerts
 from polywhale.whale_classify import fetch_and_classify, persist_profiles, top_arb_ops, top_sharps
 from polywhale.whale_diff import detect_for_wallets, persist_signals
@@ -1101,6 +1103,34 @@ def historical_backtest_cmd(settings: Settings, fee_pct: float, top_n: int) -> N
                     f"W/L={stats['wins']}/{stats['losses']:<4} WR={wr:>5}  "
                     f"PnL=${stats['pnl']:+10,.2f}"
                 )
+    finally:
+        conn.close()
+
+
+@cli.command(name="walk-forward")
+@click.option("--train-days", type=int, default=14, show_default=True,
+              help="Length of training observation window.")
+@click.option("--test-days", type=int, default=7, show_default=True,
+              help="Length of test simulation window after each train.")
+@click.option("--top-k", type=int, default=5, show_default=True,
+              help="How many whales (by train PnL) to follow in the test window.")
+@click.option("--stake-usd", type=float, default=40.0, show_default=True)
+@click.pass_obj
+def walk_forward_cmd(
+    settings: Settings, train_days: int, test_days: int,
+    top_k: int, stake_usd: float,
+) -> None:
+    """Rolling train/test walk-forward over historical position episodes."""
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        with PolymarketClient() as client:
+            summary = walk_forward(
+                conn, client,
+                train_days=train_days, test_days=test_days,
+                top_k=top_k, stake_usd=stake_usd,
+            )
+        click.echo(walk_forward_format(summary))
     finally:
         conn.close()
 
