@@ -18,6 +18,8 @@ from polywhale.backtest import (
 from polywhale.config import Settings
 from polywhale.copy_trader import copy_trade_stats, process_copy_trades
 from polywhale.db import connect, run_migrations
+from polywhale.historical_backfill import backfill_all_watchlist, backfill_wallet_activity
+from polywhale.historical_backtest import backtest_all_wallets
 from polywhale.logging_setup import configure as configure_logging
 from polywhale.monte_carlo import simulate_aggregated, simulate_per_whale
 from polywhale.poly_arb import detect_combo_arb, inspect_event, persist_combo_arb
@@ -1016,6 +1018,89 @@ def backtest_cmd(
                 f"W/L={stats['wins']}/{stats['losses']:<3}  "
                 f"PnL=${stats['pnl']:+,.2f}"
             )
+    finally:
+        conn.close()
+
+
+@cli.command(name="historical-backfill")
+@click.option("--wallet", default=None,
+              help="Single wallet to backfill. Omit to do entire watchlist.")
+@click.option("--max-offset", type=int, default=5000, show_default=True,
+              help="Max pagination depth (api errors past ~5K).")
+@click.option("--page-size", type=int, default=500, show_default=True)
+@click.pass_obj
+def historical_backfill_cmd(
+    settings: Settings, wallet: str | None, max_offset: int, page_size: int,
+) -> None:
+    """Paginate data-api/activity for watchlist wallets; store raw events."""
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        with PolymarketClient() as client:
+            if wallet:
+                r = backfill_wallet_activity(
+                    conn, client, wallet,
+                    max_offset=max_offset, page_size=page_size,
+                )
+                click.echo(
+                    f"backfill {wallet[:14]}: pages={r['pages']} "
+                    f"inserted={r['inserted']} dup={r['skipped_dup']} "
+                    f"oldest_ts={r['oldest_ts']}"
+                )
+            else:
+                s = backfill_all_watchlist(
+                    conn, client, max_offset=max_offset, page_size=page_size,
+                )
+                click.echo(
+                    f"backfill all: wallets={s['wallets']} "
+                    f"total_pages={s['total_pages']} "
+                    f"total_inserted={s['total_inserted']}"
+                )
+    finally:
+        conn.close()
+
+
+@cli.command(name="historical-backtest")
+@click.option(
+    "--fee-pct", type=float, default=0.01, show_default=True,
+    help="Per-side fee (0.01 = 1%). PM: 0.0075 sports, 0.01 politics, 0.018 crypto.",
+)
+@click.option("--top", "top_n", type=int, default=20, show_default=True)
+@click.pass_obj
+def historical_backtest_cmd(settings: Settings, fee_pct: float, top_n: int) -> None:
+    """Reconstruct historical position episodes per whale + aggregate edge stats."""
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        with PolymarketClient() as client:
+            s = backtest_all_wallets(conn, client, fee_pct=fee_pct)
+        click.echo(
+            f"=== Historical Backtest (fee {fee_pct*100:.2f}%) ===\n"
+            f"  wallets evaluated     : {s.wallets}\n"
+            f"  position episodes     : {s.episodes_total}\n"
+            f"  resolved              : {s.episodes_resolved}\n"
+            f"  still open            : {s.episodes_open}\n"
+            f"  wins / losses         : {s.episodes_won} / {s.episodes_lost}\n"
+            f"  realized PnL          : ${s.realized_pnl:+,.2f}\n"
+            f"  avg PnL per episode   : ${s.avg_pnl:+,.4f}\n"
+        )
+        if s.by_wallet:
+            click.echo("Per-whale edge (sorted by PnL):")
+            ranked = sorted(
+                s.by_wallet.items(), key=lambda kv: -(kv[1]["pnl"] or 0)
+            )[:top_n]
+            for w, stats in ranked:
+                label = conn.execute(
+                    "SELECT label FROM whale_watchlist WHERE wallet = ?", (w,)
+                ).fetchone()
+                name = (label["label"] if label and label["label"] else w[:14])[:25]
+                wr = f"{stats['wr_pct']}%" if stats["wr_pct"] is not None else "-"
+                click.echo(
+                    f"  {name:<25} ep={stats['episodes']:>4} "
+                    f"resolved={stats['resolved']:>4} "
+                    f"W/L={stats['wins']}/{stats['losses']:<4} WR={wr:>5}  "
+                    f"PnL=${stats['pnl']:+10,.2f}"
+                )
     finally:
         conn.close()
 
