@@ -86,6 +86,65 @@ Use this section to record human/AI decisions about the watchlist over time.
 - **2026-05-28** — `0x63d43bbb87f8` (wokerjoesleeper) and `0xde7be6d489bc` (wan123)
   flagged as "$0 PnL pattern" — keep tracking for now to confirm hypothesis that
   their edge isn't capturable at 60s cadence.
+- **2026-05-28 (afternoon)** — Historical backfill landed 2,462 reconstructed
+  episodes across 17 whales. Major findings: **saintQ has 100% WR over 25
+  resolved episodes** (vastly better than our 18h sample suggested);
+  **ExitLiquidty has 74% WR / +$95K over 27 resolved** (was dormant 27d in our
+  live data but historically a top performer); **nojnn (0x7f9e) is silently
+  losing $41K historical with 33% WR over 3 resolved** — we treated them as a
+  sharp but they're not.
+
+---
+
+## Historical backtest baseline (2026-05-28, snapshot)
+
+Reconstructed from `data-api/activity` pagination → vwap per-position
+analysis. These are the WHALES' own PnL, not ours — but it tells us where
+real edge exists and what our copy targets should be.
+
+```
+Wallet                  Resolved  WR     Whale PnL    Status
+saintQ (0x1e3b)           25     100%    +$7.9K       TOP-TIER — track + copy
+ExitLiquidty (0xeb67)     27      74%    +$95K        TOP-TIER — but dormant 27d
+Erasmus (0xc658)          19      47%    +$18K        marginal — coin-flip ish
+ID4 (0x73e3)              12      75%    +$3.3K       sample small but good ratio
+VPenguin (0xfbf3)          7      86%    +$722K       small n, big numbers
+EB99999 (0x5d0f)           4     100%    +$77K        small n, big numbers
+nojnn (0x7f9e)             3      33%    -$41K        DROP CANDIDATE
+bossoskil1 (0xa5ea)        0       -      open only   markets not resolved yet
+strike123 (0xf284)         1       0%    -$90         not enough data
+(other 9 whales)           0       -      open only   need time
+```
+
+### What this changes about the watchlist
+
+- **High confidence keeps**: saintQ, ExitLiquidty, VPenguin, EB99999, ID4
+- **Candidates to drop**: nojnn (negative across resolved sample),
+  wokerjoesleeper + wan123 (still flagged for $0 pattern from live data)
+- **Reserve judgment**: bossoskil1, strike123, the other 8 whose markets
+  haven't resolved enough — re-evaluate in 4-6 weeks
+
+---
+
+## Validation methodology established (2026-05-28)
+
+Three new CLI commands now part of the audit toolkit:
+
+```bash
+# Monte Carlo — overstated for our use; reference only
+polywhale monte-carlo --per-whale --samples 10000
+
+# Historical backtest — the credible per-whale edge measurement
+polywhale historical-backtest --fee-pct 0.01
+
+# Walk-forward — the credible out-of-sample PnL forecast
+polywhale walk-forward --train-days 14 --test-days 7 --top-k 5
+```
+
+**Anchor on walk-forward, not Monte Carlo.** Walk-forward says $85/week
+average across 17 windows with 58.8% consistency. Monte Carlo says $678/week
+median with 98% positive probability. The walk-forward number is the one to
+plan around — it's the only one that tests out-of-sample.
 
 ---
 
