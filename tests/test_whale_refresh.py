@@ -305,6 +305,44 @@ def test_mark_endorsed_records_specialty(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_set_archetype_uncopyable_sets_retail_copyable_zero(tmp_path: Path) -> None:
+    """Cycle 2 research: 5 archetypes structurally uncopyable. Tagging a wallet
+    with one of them should flip retail_copyable to 0 so copy_trader skips it."""
+    from polywhale.whale_refresh import set_archetype
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        upsert_manual(conn, wallet="0xnewsarb", label="probably-bloomberg")
+        ok = set_archetype(conn, "0xnewsarb", "news-arb")
+        assert ok is True
+        row = conn.execute(
+            "SELECT playbook_archetype, retail_copyable "
+            "FROM whale_watchlist WHERE wallet = '0xnewsarb'"
+        ).fetchone()
+        assert row["playbook_archetype"] == "news-arb"
+        assert row["retail_copyable"] == 0
+    finally:
+        conn.close()
+
+
+def test_set_archetype_calibration_keeps_copyable(tmp_path: Path) -> None:
+    """Calibration archetype is copyable — retail_copyable stays 1."""
+    from polywhale.whale_refresh import set_archetype
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        upsert_manual(conn, wallet="0xslowsharp")
+        set_archetype(conn, "0xslowsharp", "calibration")
+        row = conn.execute(
+            "SELECT playbook_archetype, retail_copyable "
+            "FROM whale_watchlist WHERE wallet = '0xslowsharp'"
+        ).fetchone()
+        assert row["playbook_archetype"] == "calibration"
+        assert row["retail_copyable"] == 1
+    finally:
+        conn.close()
+
+
 def test_mark_endorsed_specialty_none_keeps_existing(tmp_path: Path) -> None:
     """Re-endorsing without specifying specialty should NOT clear it (COALESCE)."""
     conn = connect(tmp_path / "t.sqlite")

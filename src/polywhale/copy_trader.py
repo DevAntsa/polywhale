@@ -145,6 +145,24 @@ def place_copy_bet(
     ).fetchone()
     if existing:
         return False
+
+    # Cycle 2 archetype filter: skip wallets whose playbook is structurally
+    # uncopyable by retail (news-arb, oracle-edge, insider, market-making,
+    # cross-platform hedging). Default retail_copyable=1 so unclassified
+    # wallets still trade.
+    copyable_row = conn.execute(
+        "SELECT retail_copyable, playbook_archetype FROM whale_watchlist "
+        "WHERE wallet = ?",
+        (signal_row["wallet"],),
+    ).fetchone()
+    if copyable_row is not None and copyable_row["retail_copyable"] == 0:
+        logger.info(
+            "place_copy_bet skipped by archetype filter: wallet=%s playbook=%s",
+            signal_row["wallet"][:14],
+            copyable_row["playbook_archetype"] or "unspecified",
+        )
+        return False
+
     price = signal_row["current_price"]
     if price is None or price <= 0 or price >= 1:
         return False

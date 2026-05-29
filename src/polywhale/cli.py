@@ -47,6 +47,7 @@ from polywhale.whale_refresh import (
     load_active_watchlist,
     mark_endorsed,
     refresh_watchlist,
+    set_archetype,
     set_risk_flags,
     update_activity_stats,
     upsert_manual,
@@ -961,6 +962,34 @@ def watchlist_risk_cmd(settings: Settings, wallet: str, flags: str) -> None:
         run_migrations(conn)
         ok = set_risk_flags(conn, wallet, flags)
         click.echo(f"watchlist-risk {wallet}: {'ok' if ok else 'wallet not found'}")
+    finally:
+        conn.close()
+
+
+@cli.command(name="watchlist-archetype")
+@click.option("--wallet", required=True)
+@click.option(
+    "--archetype",
+    required=True,
+    help=(
+        "Playbook archetype: calibration | narrative | resolution | unspecified "
+        "(copyable) or news-arb | oracle-edge | insider | market-making | "
+        "cross-platform-hedge (uncopyable — copy_trader will skip)."
+    ),
+)
+@click.pass_obj
+def watchlist_archetype_cmd(
+    settings: Settings, wallet: str, archetype: str,
+) -> None:
+    """Tag a wallet with its playbook archetype and derive retail_copyable."""
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        ok = set_archetype(conn, wallet, archetype)
+        click.echo(
+            f"watchlist-archetype {wallet} -> {archetype}: "
+            f"{'ok' if ok else 'wallet not found'}"
+        )
     finally:
         conn.close()
 

@@ -377,3 +377,40 @@ def set_risk_flags(conn: sqlite3.Connection, wallet: str, flags: str) -> bool:
     )
     conn.commit()
     return cur.rowcount > 0
+
+
+# Archetype playbook tags from Cycle 2 research. Uncopyable means our
+# copy_trader skips entry signals from this wallet — see place_copy_bet.
+UNCOPYABLE_ARCHETYPES = frozenset({
+    "news-arb",
+    "oracle-edge",
+    "insider",
+    "market-making",
+    "cross-platform-hedge",
+})
+COPYABLE_ARCHETYPES = frozenset({
+    "calibration",
+    "narrative",
+    "resolution",
+    "unspecified",
+})
+
+
+def set_archetype(
+    conn: sqlite3.Connection,
+    wallet: str,
+    archetype: str,
+) -> bool:
+    """Tag a wallet with a playbook archetype and derive retail_copyable.
+
+    Uncopyable archetypes set retail_copyable=0 → copy_trader skips them.
+    """
+    archetype = archetype.lower().strip()
+    copyable = 0 if archetype in UNCOPYABLE_ARCHETYPES else 1
+    cur = conn.execute(
+        "UPDATE whale_watchlist SET playbook_archetype = ?, retail_copyable = ? "
+        "WHERE wallet = ?",
+        (archetype, copyable, wallet.lower()),
+    )
+    conn.commit()
+    return cur.rowcount > 0

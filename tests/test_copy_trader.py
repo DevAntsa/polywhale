@@ -305,6 +305,51 @@ def test_place_copy_bet_refuses_when_portfolio_cap_full(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_place_copy_bet_skips_uncopyable_archetype(tmp_path: Path) -> None:
+    """Cycle 2: wallets tagged with an uncopyable playbook archetype
+    (news-arb, market-making, etc.) should have their entry signals dropped."""
+    from polywhale.whale_refresh import set_archetype, upsert_manual
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        upsert_manual(conn, wallet="0xwa", label="newsbot")
+        set_archetype(conn, "0xwa", "news-arb")
+        sig_id = _insert_signal(
+            conn, wallet="0xwa", asset_id="t1",
+            signal_type="new_position", current_price=0.40,
+        )
+        assert place_copy_bet(
+            conn, _row(conn, sig_id),
+            bankroll_usd=_BANKROLL, stake_pct=0.02,
+        ) is False
+        n = conn.execute(
+            "SELECT COUNT(*) FROM poly_paper_bets WHERE source = 'whale_copy'"
+        ).fetchone()[0]
+        assert n == 0
+    finally:
+        conn.close()
+
+
+def test_place_copy_bet_allows_unclassified_wallets(tmp_path: Path) -> None:
+    """A wallet with no archetype set should default to retail_copyable=1
+    and trade normally."""
+    from polywhale.whale_refresh import upsert_manual
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        upsert_manual(conn, wallet="0xnew", label=None)
+        sig_id = _insert_signal(
+            conn, wallet="0xnew", asset_id="t1",
+            signal_type="new_position", current_price=0.40,
+        )
+        assert place_copy_bet(
+            conn, _row(conn, sig_id),
+            bankroll_usd=_BANKROLL, stake_pct=0.02,
+        ) is True
+    finally:
+        conn.close()
+
+
 def test_copy_trade_stats_aggregates(tmp_path: Path) -> None:
     conn = connect(tmp_path / "t.sqlite")
     try:
