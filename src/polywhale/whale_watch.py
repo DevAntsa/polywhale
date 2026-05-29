@@ -11,10 +11,15 @@ import logging
 import sqlite3
 import time
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from polywhale.polymarket import PolymarketClient, WhalePosition
 
 logger = logging.getLogger(__name__)
+
+# Cap concurrent fetches to stay polite to data-api and keep memory bounded
+# on the Hetzner CAX11 box.
+PARALLEL_FETCH_MAX_WORKERS = 5
 
 
 def snapshot_wallet(
@@ -77,6 +82,65 @@ def _positions_changed(
     ).fetchall()
     prev_set = {(r["asset_id"], round(float(r["size"] or 0), 6)) for r in prev_rows}
     return prev_set != new_set
+
+
+def snapshot_wallets_parallel(
+    conn: sqlite3.Connection,
+    client: PolymarketClient,
+    wallets: Iterable[str],
+    *,
+    size_threshold: float = 10.0,
+    max_workers: int = PARALLEL_FETCH_MAX_WORKERS,
+) -> int:
+    """Snapshot many wallets concurrently.
+
+    HTTP fetches run in a thread pool (data-api is I/O bound, gains are large).
+    The SQLite write phase is serial on the single connection (sqlite3 is not
+    thread-safe across cursors on one connection). Returns total snapshots stored.
+    """
+    targets = [w.lower() for w in wallets]
+    if not targets:
+        return 0
+
+    fetched: dict[str, list[WhalePosition]] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        future_to_wallet = {
+            ex.submit(client.get_whale_positions, w, size_threshold=size_threshold): w
+            for w in targets
+        }
+        for future in as_completed(future_to_wallet):
+            wallet = future_to_wallet[future]
+            try:
+                fetched[wallet] = future.result()
+            except Exception as exc:
+                logger.warning("parallel fetch failed for %s: %s", wallet[:14], exc)
+
+    snap_count = 0
+    now = int(time.time())
+    for wallet, positions in fetched.items():
+        if not positions:
+            continue
+        new_set = {(p.asset_id, round(float(p.size or 0), 6)) for p in positions}
+        if not _positions_changed(conn, wallet, new_set):
+            continue
+        rows = [_to_row(p, now) for p in positions]
+        conn.executemany(
+            """
+            INSERT INTO whale_positions(
+                wallet, asset_id, condition_id, market_slug, event_slug, title,
+                outcome, size, avg_price, current_price, current_value,
+                initial_value, cash_pnl, realized_pnl, percent_pnl, end_date,
+                neg_risk, captured_at, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        snap_count += len(rows)
+        logger.info(
+            "snapshot_wallet(%s): stored %d positions (changed)", wallet, len(rows),
+        )
+    conn.commit()
+    return snap_count
 
 
 def prune_old_snapshots(conn: sqlite3.Connection, *, days: int = 30) -> dict:

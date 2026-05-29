@@ -5,6 +5,7 @@ from polywhale.polymarket import WhalePosition
 from polywhale.whale_watch import (
     prune_old_snapshots,
     snapshot_wallet,
+    snapshot_wallets_parallel,
     watch_wallets,
 )
 
@@ -181,5 +182,60 @@ def test_watch_wallets_handles_per_wallet_error(tmp_path: Path) -> None:
         total = watch_wallets(conn, client, ["0xgood", "0xbroken"], interval_s=0, max_iterations=1)
         # Only 0xgood contributes
         assert total == 1
+    finally:
+        conn.close()
+
+
+def test_snapshot_wallets_parallel_collects_all(tmp_path: Path) -> None:
+    """Parallel fetch + serial write: all wallets' positions land in the DB."""
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        positions = [
+            _pos("0xa", "tok1", title="A1"),
+            _pos("0xb", "tok2", title="B1"),
+            _pos("0xc", "tok3", title="C1"),
+        ]
+        client = _StubClient(positions)
+        count = snapshot_wallets_parallel(
+            conn, client, ["0xa", "0xb", "0xc"], max_workers=3,
+        )
+        assert count == 3
+        rows = list(conn.execute(
+            "SELECT wallet, title FROM whale_positions ORDER BY wallet"
+        ))
+        assert {r["wallet"] for r in rows} == {"0xa", "0xb", "0xc"}
+    finally:
+        conn.close()
+
+
+def test_snapshot_wallets_parallel_tolerates_one_fetch_failure(tmp_path: Path) -> None:
+    """If one wallet's fetch throws, the others still complete."""
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+
+        class _PartiallyBrokenClient:
+            def get_whale_positions(self, wallet, *, size_threshold=10.0):
+                if wallet == "0xbroken":
+                    raise RuntimeError("simulated fetch failure")
+                return [_pos(wallet, f"tok-{wallet}", title=f"OK-{wallet}")]
+
+        client = _PartiallyBrokenClient()
+        count = snapshot_wallets_parallel(
+            conn, client, ["0xa", "0xbroken", "0xc"], max_workers=3,
+        )
+        # Two wallets succeeded → 2 stored
+        assert count == 2
+    finally:
+        conn.close()
+
+
+def test_snapshot_wallets_parallel_empty_input_returns_zero(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        client = _StubClient([])
+        assert snapshot_wallets_parallel(conn, client, []) == 0
     finally:
         conn.close()
