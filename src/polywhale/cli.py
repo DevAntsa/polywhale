@@ -966,6 +966,44 @@ def watchlist_risk_cmd(settings: Settings, wallet: str, flags: str) -> None:
         conn.close()
 
 
+@cli.command(name="maker-routing-report")
+@click.pass_obj
+def maker_routing_report_cmd(settings: Settings) -> None:
+    """Show maker-routing shadow stats: maker share, fees vs rebates, PnL delta."""
+    from polywhale.maker_router import routing_report
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        r = routing_report(conn)
+        click.echo("=== maker-routing shadow report ===")
+        click.echo(
+            f"  entry routes : maker={r['entry_maker']} taker={r['entry_taker']} "
+            f"fallback={r['entry_fallback']}  total={r['entry_n']}"
+        )
+        click.echo(
+            f"  exit routes  : maker={r['exit_maker']} taker={r['exit_taker']} "
+            f"fallback={r['exit_fallback']}  total={r['exit_n']}"
+        )
+        click.echo(
+            f"  entry net fee: ${r['entry_fee_total']:+,.4f}  "
+            f"(positive = rebate captured)"
+        )
+        click.echo(
+            f"  exit net fee : ${r['exit_fee_total']:+,.4f}"
+        )
+        click.echo(
+            f"  paper PnL    : ${r['paper_pnl_sum']:+,.4f}  "
+            f"(n={r['n_compared']} compared)"
+        )
+        click.echo(
+            f"  routed PnL   : ${r['routed_pnl_sum']:+,.4f}"
+        )
+        delta = r["routed_pnl_sum"] - r["paper_pnl_sum"]
+        click.echo(f"  delta        : ${delta:+,.4f}  (routed - paper)")
+    finally:
+        conn.close()
+
+
 @cli.command(name="whale-survival")
 @click.option("--top-n", type=int, default=30, show_default=True,
               help="Print the top-N + bottom-N by survival score.")

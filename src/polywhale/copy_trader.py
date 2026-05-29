@@ -275,6 +275,21 @@ def place_copy_bet(
         except Exception as exc:
             logger.warning("friction entry snapshot failed: %s", exc)
 
+        # Maker-routing shadow observer: records what real-money execution
+        # would have looked like under maker-first routing with taker fallback.
+        try:
+            from polywhale.maker_router import shadow_observe_entry
+            shadow_observe_entry(
+                conn,
+                bet_id=bet_id,
+                signal_row=signal_row,
+                paper_entry_price=float(price),
+                stake_usd=float(final_stake),
+                market_slug=market_slug,
+            )
+        except Exception as exc:
+            logger.warning("maker shadow entry failed: %s", exc)
+
     logger.info(
         "place_copy_bet signal=%d wallet=%s stake=$%.2f (mech=$%.2f x ai=%.2f) "
         "shares=%.1f @ %.4f",
@@ -420,6 +435,20 @@ def close_copy_bet(
         )
     except Exception as exc:
         logger.warning("friction exit snapshot failed: %s", exc)
+
+    # Maker-routing shadow observer on exit.
+    try:
+        from polywhale.maker_router import shadow_observe_exit
+        shadow_observe_exit(
+            conn,
+            bet_id=int(open_bet["bet_id"]),
+            exit_signal_row=signal_row,
+            paper_exit_price=float(exit_price),
+            shares=shares,
+            market_slug=str(open_bet["market_slug"] or ""),
+        )
+    except Exception as exc:
+        logger.warning("maker shadow exit failed: %s", exc)
 
     logger.info(
         "close_copy_bet signal=%d wallet=%s entry=%.4f exit=%.4f shares=%.1f pnl=$%.2f",
