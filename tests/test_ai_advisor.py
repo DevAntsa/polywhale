@@ -11,6 +11,7 @@ from polywhale.ai_advisor import (
     call_advisor,
 )
 from polywhale.db import connect, run_migrations
+from polywhale.whale_sizing import EXPLORE_STAKE_PCT
 
 
 def _mock_openrouter(content_dict: dict, *, status: int = 200):
@@ -204,10 +205,11 @@ def test_advice_stored_with_paper_bet(tmp_path: Path) -> None:
             bankroll_usd=2000.0, stake_pct=0.02, ai_advice=advice,
         )
         bet = conn.execute("SELECT * FROM poly_paper_bets").fetchone()
-        # Kelly exploration stake (no prior trades for this whale) = 0.5% x $2000 = $10
-        # AI multiplier 1.5 x $10 = $15
-        assert abs(float(bet["mechanical_stake"]) - 10.0) < 0.5
-        assert abs(float(bet["cost_usd"]) - 15.0) < 0.5
+        # Kelly exploration stake (no prior trades) = EXPLORE_STAKE_PCT * bankroll
+        # Final cost = mechanical * AI multiplier
+        expected_mech = 2000.0 * EXPLORE_STAKE_PCT
+        assert abs(float(bet["mechanical_stake"]) - expected_mech) < 0.5
+        assert abs(float(bet["cost_usd"]) - expected_mech * 1.5) < 0.5
         assert bet["ai_multiplier"] == 1.5
         assert bet["ai_reason"] == "specialist match"
         assert bet["ai_confidence"] == "high"

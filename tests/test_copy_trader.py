@@ -10,6 +10,10 @@ from polywhale.copy_trader import (
     process_copy_trades,
 )
 from polywhale.db import connect, run_migrations
+from polywhale.whale_sizing import EXPLORE_STAKE_PCT, MAX_PORTFOLIO_DEPLOY_PCT
+
+_BANKROLL = 2000.0
+_EXPLORE = _BANKROLL * EXPLORE_STAKE_PCT  # default explore stake
 
 
 def _insert_signal(
@@ -56,13 +60,13 @@ def test_place_copy_bet_uses_exploration_stake_for_unknown_whale(tmp_path: Path)
         sig_id = _insert_signal(conn, wallet="0xw", asset_id="t1",
                                 signal_type="new_position", current_price=0.40)
         sig_row = _row(conn, sig_id)
-        assert place_copy_bet(conn, sig_row, bankroll_usd=2000.0, stake_pct=0.02)
+        assert place_copy_bet(conn, sig_row, bankroll_usd=_BANKROLL, stake_pct=0.02)
         bet = find_open_copy_bet_for_signal(conn, sig_id)
         assert bet is not None
-        # Exploration stake = 0.5% x $2000 = $10
-        assert abs(bet["cost_usd"] - 10.0) < 0.5
-        # Shares = $10 / 0.40 = 25
-        assert abs(bet["size_shares"] - 25.0) < 1.0
+        # Exploration stake = EXPLORE_STAKE_PCT * bankroll
+        assert abs(bet["cost_usd"] - _EXPLORE) < 0.5
+        # Shares = stake / 0.40
+        assert abs(bet["size_shares"] - _EXPLORE / 0.40) < 1.0
         assert bet["source"] == "whale_copy"
         assert bet["source_ref_id"] == sig_id
     finally:
@@ -78,10 +82,10 @@ def test_place_copy_bet_weights_by_conviction(tmp_path: Path) -> None:
                                 signal_type="new_position", current_price=0.40,
                                 conviction_discount=0.5)
         sig_row = _row(conn, sig_id)
-        place_copy_bet(conn, sig_row, bankroll_usd=2000.0, stake_pct=0.02)
+        place_copy_bet(conn, sig_row, bankroll_usd=_BANKROLL, stake_pct=0.02)
         bet = find_open_copy_bet_for_signal(conn, sig_id)
-        # 0.5% exploration x 0.5 conviction x $2000 = $5
-        assert abs(bet["cost_usd"] - 5.0) < 0.5
+        # explore * 0.5 conviction
+        assert abs(bet["cost_usd"] - _EXPLORE * 0.5) < 0.5
     finally:
         conn.close()
 
@@ -124,7 +128,7 @@ def test_close_copy_bet_computes_pnl(tmp_path: Path) -> None:
         entry_sig = _insert_signal(conn, wallet="0xw", asset_id="t1",
                                    signal_type="new_position", current_price=0.40)
         entry_row = _row(conn, entry_sig)
-        place_copy_bet(conn, entry_row, bankroll_usd=2000.0, stake_pct=0.02)
+        place_copy_bet(conn, entry_row, bankroll_usd=_BANKROLL, stake_pct=0.02)
         # Whale exits at 0.55
         exit_sig = _insert_signal(conn, wallet="0xw", asset_id="t1",
                                   signal_type="closed_position", current_price=0.55,
@@ -132,8 +136,9 @@ def test_close_copy_bet_computes_pnl(tmp_path: Path) -> None:
         exit_row = _row(conn, exit_sig)
         pnl = close_copy_bet(conn, exit_row)
         assert pnl is not None
-        # exploration stake $10 → 25 shares at 0.40 → pnl = 0.15 x 25 = $3.75
-        assert abs(pnl - 3.75) < 0.1
+        # shares = explore/0.40; pnl = (0.55 - 0.40) * shares
+        expected_pnl = (0.55 - 0.40) * (_EXPLORE / 0.40)
+        assert abs(pnl - expected_pnl) < 0.1
         # Bet now linked to the exit signal
         bet = find_closed_copy_bet_by_exit_signal(conn, exit_sig)
         assert bet is not None
@@ -167,7 +172,7 @@ def test_added_signal_tops_up_existing_bet(tmp_path: Path) -> None:
         new_sig = _insert_signal(conn, wallet="0xw", asset_id="t1",
                                  signal_type="new_position", current_price=0.40,
                                  market_slug="m1")
-        place_copy_bet(conn, _row(conn, new_sig), bankroll_usd=2000.0, stake_pct=0.02)
+        place_copy_bet(conn, _row(conn, new_sig), bankroll_usd=_BANKROLL, stake_pct=0.02)
         n_initial = conn.execute(
             "SELECT COUNT(*) FROM poly_paper_bets WHERE source = 'whale_copy'"
         ).fetchone()[0]
@@ -176,7 +181,7 @@ def test_added_signal_tops_up_existing_bet(tmp_path: Path) -> None:
         add_sig = _insert_signal(conn, wallet="0xw", asset_id="t1",
                                  signal_type="added_size", current_price=0.50,
                                  market_slug="m1", new_size=200_000, old_size=100_000)
-        place_copy_bet(conn, _row(conn, add_sig), bankroll_usd=2000.0, stake_pct=0.02)
+        place_copy_bet(conn, _row(conn, add_sig), bankroll_usd=_BANKROLL, stake_pct=0.02)
         n_after = conn.execute(
             "SELECT COUNT(*) FROM poly_paper_bets WHERE source = 'whale_copy'"
         ).fetchone()[0]
@@ -185,8 +190,8 @@ def test_added_signal_tops_up_existing_bet(tmp_path: Path) -> None:
             "SELECT * FROM poly_paper_bets WHERE source = 'whale_copy'"
         ).fetchone()
         assert bet["add_count"] == 1
-        # cost = original $10 + additional $10 = $20 (exploration stake at 0.5% of $2K)
-        assert abs(float(bet["cost_usd"]) - 20.0) < 0.5
+        # cost = original explore + topup explore = 2 * explore
+        assert abs(float(bet["cost_usd"]) - 2 * _EXPLORE) < 0.5
         assert float(bet["additions_total_usd"]) > 0
         # entry vwap is between 0.40 and 0.50
         assert 0.40 < float(bet["entry_price"]) < 0.50
@@ -217,24 +222,26 @@ def test_topup_vwap_computation(tmp_path: Path) -> None:
     conn = connect(tmp_path / "t.sqlite")
     try:
         run_migrations(conn)
-        # Open at 0.40 with $10 → 25 shares
+        # Open at 0.40 with explore stake
         new_sig = _insert_signal(conn, wallet="0xw", asset_id="t1",
                                  signal_type="new_position", current_price=0.40,
                                  market_slug="m1")
-        place_copy_bet(conn, _row(conn, new_sig), bankroll_usd=2000.0, stake_pct=0.02)
-        # Add at 0.50 with $10 → 20 more shares
+        place_copy_bet(conn, _row(conn, new_sig), bankroll_usd=_BANKROLL, stake_pct=0.02)
+        # Add at 0.50 with explore stake
         add_sig = _insert_signal(conn, wallet="0xw", asset_id="t1",
                                  signal_type="added_size", current_price=0.50,
                                  market_slug="m1", new_size=200_000, old_size=100_000)
-        place_copy_bet(conn, _row(conn, add_sig), bankroll_usd=2000.0, stake_pct=0.02)
+        place_copy_bet(conn, _row(conn, add_sig), bankroll_usd=_BANKROLL, stake_pct=0.02)
         bet = conn.execute(
             "SELECT entry_price, size_shares, cost_usd FROM poly_paper_bets "
             "WHERE source = 'whale_copy'"
         ).fetchone()
-        # cost = $20, shares = 25 + 20 = 45, vwap = 20/45 ~= 0.4444
-        assert abs(float(bet["cost_usd"]) - 20.0) < 0.5
-        assert abs(float(bet["size_shares"]) - 45.0) < 1.0
-        assert abs(float(bet["entry_price"]) - 0.4444) < 0.02
+        expected_shares = _EXPLORE / 0.40 + _EXPLORE / 0.50
+        expected_cost = 2 * _EXPLORE
+        expected_vwap = expected_cost / expected_shares
+        assert abs(float(bet["cost_usd"]) - expected_cost) < 0.5
+        assert abs(float(bet["size_shares"]) - expected_shares) < 1.0
+        assert abs(float(bet["entry_price"]) - expected_vwap) < 0.02
     finally:
         conn.close()
 
@@ -248,7 +255,7 @@ def test_process_copy_trades_handles_mixed_signals(tmp_path: Path) -> None:
                        current_price=0.30, market_slug="market_a")
         _insert_signal(conn, wallet="0xb", asset_id="tb", signal_type="new_position",
                        current_price=0.50, market_slug="market_b")
-        result = process_copy_trades(conn, bankroll_usd=2000.0, stake_pct=0.02)
+        result = process_copy_trades(conn, bankroll_usd=_BANKROLL, stake_pct=0.02)
         assert result["opened"] == 2
         assert result["closed"] == 0
 
@@ -256,26 +263,29 @@ def test_process_copy_trades_handles_mixed_signals(tmp_path: Path) -> None:
         _insert_signal(conn, wallet="0xa", asset_id="ta", signal_type="closed_position",
                        current_price=0.40, new_size=0, old_size=100_000,
                        market_slug="market_a")
-        result2 = process_copy_trades(conn, bankroll_usd=2000.0, stake_pct=0.02)
+        result2 = process_copy_trades(conn, bankroll_usd=_BANKROLL, stake_pct=0.02)
         assert result2["opened"] == 0
         assert result2["closed"] == 1
-        # Exploration stake $10 / 0.30 ~= 33.33 shares, pnl = 0.10 x 33.33 ~= $3.33
-        assert abs(result2["realized_pnl"] - 3.33) < 0.5
+        # shares = explore/0.30; pnl = (0.40 - 0.30) * shares
+        expected_pnl = (0.40 - 0.30) * (_EXPLORE / 0.30)
+        assert abs(result2["realized_pnl"] - expected_pnl) < 0.5
     finally:
         conn.close()
 
 
 def test_place_copy_bet_refuses_when_portfolio_cap_full(tmp_path: Path) -> None:
-    """New bets are skipped once 25% portfolio deployment cap is engaged."""
+    """New bets are skipped once MAX_PORTFOLIO_DEPLOY_PCT cap is engaged."""
     conn = connect(tmp_path / "t.sqlite")
     try:
         run_migrations(conn)
-        # Bankroll $2000 → 25% cap = $500. Pre-populate $495 already deployed.
-        # Exploration stake on $2000 = $10. $495 + $10 = $505 > $500 → reject.
+        cap_usd = _BANKROLL * MAX_PORTFOLIO_DEPLOY_PCT
+        # Pre-populate just under the cap so the next explore stake pushes us over.
+        prefilled = cap_usd - max(0.5, _EXPLORE / 2)
         conn.execute(
             "INSERT INTO poly_paper_bets(source, market_slug, token_id, side, "
             "entry_price, size_shares, cost_usd, placed_at) "
-            "VALUES ('whale_copy', 'm0', 't0', 'YES', 0.4, 100, 495, 1)"
+            "VALUES ('whale_copy', 'm0', 't0', 'YES', 0.4, 100, ?, 1)",
+            (prefilled,),
         )
         conn.commit()
         sig_id = _insert_signal(
@@ -285,7 +295,7 @@ def test_place_copy_bet_refuses_when_portfolio_cap_full(tmp_path: Path) -> None:
         )
         assert not place_copy_bet(
             conn, _row(conn, sig_id),
-            bankroll_usd=2000.0, stake_pct=0.02,
+            bankroll_usd=_BANKROLL, stake_pct=0.02,
         )
         n = conn.execute(
             "SELECT COUNT(*) FROM poly_paper_bets WHERE source = 'whale_copy'"

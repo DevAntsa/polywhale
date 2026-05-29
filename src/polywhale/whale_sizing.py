@@ -35,12 +35,12 @@ logger = logging.getLogger(__name__)
 # Tunable constants (frozen after calibration)
 KELLY_FRACTION = 0.25                # 1/4 Kelly per literature consensus
 DEFAULT_FEES_ROUND_TRIP = 0.015      # Polymarket blended sports+politics
-EXPLORE_STAKE_PCT = 0.005            # 0.5% bankroll for unproven whales
+EXPLORE_STAKE_PCT = 0.015            # 1.5% bankroll for unproven whales (paper-tune)
 SHRINK_LOW = 10                       # n < this → pure exploration
 SHRINK_HIGH = 30                      # n ≥ this → full Kelly
-CAP_PER_BET = 0.025                  # max 2.5% bankroll per single bet
-MAX_OPEN_POSITIONS = 10
-MAX_PORTFOLIO_DEPLOY_PCT = 0.25       # 25% of bankroll deployed at once
+CAP_PER_BET = 0.05                   # max 5% bankroll per single bet (paper-tune)
+MAX_OPEN_POSITIONS = 25
+MAX_PORTFOLIO_DEPLOY_PCT = 0.50       # 50% of bankroll deployed at once (paper-tune)
 MAX_CATEGORY_DEPLOY_PCT = 0.25        # 25% of bankroll per category
 
 

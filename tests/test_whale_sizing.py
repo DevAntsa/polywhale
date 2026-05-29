@@ -7,6 +7,8 @@ from polywhale.db import connect, run_migrations
 from polywhale.whale_sizing import (
     CAP_PER_BET,
     EXPLORE_STAKE_PCT,
+    MAX_OPEN_POSITIONS,
+    MAX_PORTFOLIO_DEPLOY_PCT,
     check_portfolio_guards,
     compute_kelly_stake,
     whale_pnl_stats,
@@ -139,11 +141,11 @@ def test_kelly_shrinkage_between_low_and_high(tmp_path: Path) -> None:
 
 
 def test_check_portfolio_guards_max_open(tmp_path: Path) -> None:
-    """11th open position should be rejected."""
+    """(MAX_OPEN_POSITIONS+1)th open position should be rejected."""
     conn = connect(tmp_path / "t.sqlite")
     try:
         run_migrations(conn)
-        for i in range(10):
+        for i in range(MAX_OPEN_POSITIONS):
             conn.execute(
                 "INSERT INTO poly_paper_bets(source, market_slug, token_id, side, "
                 "entry_price, size_shares, cost_usd, placed_at) "
@@ -182,20 +184,22 @@ def test_check_portfolio_guards_dedup_same_market(tmp_path: Path) -> None:
 
 
 def test_check_portfolio_guards_deployment_cap(tmp_path: Path) -> None:
-    """Deploying >25% of bankroll triggers cap."""
+    """Deploying past MAX_PORTFOLIO_DEPLOY_PCT triggers cap."""
     conn = connect(tmp_path / "t.sqlite")
     try:
         run_migrations(conn)
-        # Bankroll $2000, cap = $500. Insert $480 already deployed.
-        # Adding $30 more = $510 > $500 → blocked.
+        bankroll = 2000.0
+        cap_usd = bankroll * MAX_PORTFOLIO_DEPLOY_PCT
+        already_deployed = cap_usd - 20.0
         conn.execute(
             "INSERT INTO poly_paper_bets(source, market_slug, token_id, side, "
             "entry_price, size_shares, cost_usd, placed_at) "
-            "VALUES ('whale_copy', 'm1', 't1', 'YES', 0.4, 100, 480, 1)"
+            "VALUES ('whale_copy', 'm1', 't1', 'YES', 0.4, 100, ?, 1)",
+            (already_deployed,),
         )
         conn.commit()
         ok, reason = check_portfolio_guards(
-            conn, proposed_stake=30.0, bankroll_usd=2000.0,
+            conn, proposed_stake=30.0, bankroll_usd=bankroll,
             market_slug="m2", outcome="Yes",
         )
         assert ok is False
