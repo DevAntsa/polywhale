@@ -966,6 +966,35 @@ def watchlist_risk_cmd(settings: Settings, wallet: str, flags: str) -> None:
         conn.close()
 
 
+@cli.command(name="whale-survival")
+@click.option("--top-n", type=int, default=30, show_default=True,
+              help="Print the top-N + bottom-N by survival score.")
+@click.pass_obj
+def whale_survival_cmd(settings: Settings, top_n: int) -> None:
+    """Recompute survival scores for all active whales and print breakdown."""
+    from polywhale.whale_survival import recompute_all, survival_tier
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        results = recompute_all(conn)
+        results.sort(key=lambda b: b.survival_score, reverse=True)
+        click.echo(f"=== survival scores ({len(results)} active whales) ===")
+        header = (
+            f"  {'wallet':14}  {'tier':>14}  {'score':>6}  {'n':>3}  "
+            f"{'sample':>6} {'maker':>6} {'breadth':>7} {'recov':>6} {'skew':>6}"
+        )
+        click.echo(header)
+        for b in results:
+            click.echo(
+                f"  {b.wallet[:14]:14}  {survival_tier(b):>14}  "
+                f"{b.survival_score:6.1f}  {b.n_resolved:>3}  "
+                f"{b.f_sample:>6.1f} {b.f_maker:>6.1f} {b.f_breadth:>7.1f} "
+                f"{b.f_recovery:>6.1f} {b.f_skew:>6.1f}"
+            )
+    finally:
+        conn.close()
+
+
 @cli.command(name="watchlist-archetype")
 @click.option("--wallet", required=True)
 @click.option(
