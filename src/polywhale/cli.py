@@ -972,6 +972,95 @@ def watchlist_risk_cmd(settings: Settings, wallet: str, flags: str) -> None:
         conn.close()
 
 
+@cli.command(name="whale-discover")
+@click.option("--window", default="30d", show_default=True,
+              help="Leaderboard window: 30d | 1d | None for all-time.")
+@click.option("--depth", type=int, default=500, show_default=True,
+              help="How many leaderboard rows to scan.")
+@click.option("--min-trades", type=int, default=10, show_default=True)
+@click.option("--min-wr", type=float, default=70.0, show_default=True,
+              help="Minimum win rate percent.")
+@click.option("--min-volume", type=float, default=300_000.0, show_default=True,
+              help="Minimum total volume USD.")
+@click.option("--top", type=int, default=25, show_default=True,
+              help="Show top-N ranked candidates.")
+@click.option("--auto-add", is_flag=True, default=False,
+              help="Upsert candidates into whale_watchlist as candidate=1.")
+@click.pass_obj
+def whale_discover_cmd(
+    settings: Settings,
+    window: str,
+    depth: int,
+    min_trades: int,
+    min_wr: float,
+    min_volume: float,
+    top: int,
+    auto_add: bool,
+) -> None:
+    """Scan Polymarket leaderboard for whales matching copy-trade criteria.
+
+    Default filter: >=10 resolved trades, >=70% WR, >=$300K total volume,
+    has open positions. Outputs ranked list. --auto-add upserts to watchlist
+    as candidates (active=0 so they're tracked but don't trade until promoted).
+    """
+    from polywhale.whale_discovery import discover_candidates
+    conn = connect(settings.db_path)
+    try:
+        run_migrations(conn)
+        with PolymarketClient() as client:
+            window_arg = None if window.lower() in ("none", "all", "alltime") else window
+            cands = discover_candidates(
+                client,
+                window=window_arg,
+                leaderboard_depth=depth,
+                min_trades=min_trades,
+                min_win_rate_pct=min_wr,
+                min_volume_usd=min_volume,
+            )
+        if not cands:
+            click.echo("No candidates matched.")
+            return
+        click.echo(f"=== {len(cands)} candidates (showing top {min(top, len(cands))}) ===")
+        click.echo(
+            f"  {'rank':4}  {'pseudonym':18}  {'wallet':14}  {'WR':>5}  "
+            f"{'n':>4}  {'volume':>11}  {'portfolio':>11}  {'profit':>11}"
+        )
+        for i, c in enumerate(cands[:top], 1):
+            pseudo = (c.pseudonym or "—")[:18]
+            click.echo(
+                f"  {i:>4}  {pseudo:18}  {c.wallet[:14]:14}  "
+                f"{c.win_rate_pct:>4.1f}%  {c.n_resolved:>4}  "
+                f"${c.volume:>10,.0f}  ${c.portfolio_value:>10,.0f}  "
+                f"${c.profit:>+10,.0f}"
+            )
+        if auto_add:
+            added = 0
+            for c in cands[:top]:
+                # Inactive candidate row — appears in `watchlist` only when
+                # explicitly promoted with watchlist-add.
+                ok = upsert_manual(
+                    conn, wallet=c.wallet,
+                    label=c.pseudonym or None,
+                    notes=(
+                        f"discovered {window} WR={c.win_rate_pct:.1f}% "
+                        f"vol=${c.volume:.0f} port=${c.portfolio_value:.0f}"
+                    ),
+                )
+                # Force inactive so they don't auto-trade.
+                conn.execute(
+                    "UPDATE whale_watchlist SET active = 0 "
+                    "WHERE wallet = ? AND active IS NOT NULL",
+                    (c.wallet,),
+                )
+                if ok:
+                    added += 1
+            conn.commit()
+            click.echo(f"--- auto-add: {added} candidates upserted (active=0) ---")
+            click.echo("Promote with: polywhale watchlist-add --wallet <ADDR>")
+    finally:
+        conn.close()
+
+
 @cli.command(name="whale-ws")
 @click.option(
     "--no-alerts", is_flag=True, default=False,
