@@ -1,0 +1,22 @@
+[Unit]
+Description=Polywhale weekly whale discovery sweep (leaderboard candidates)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/polymarket/app
+ExecStart=/opt/polymarket/venv/bin/polywhale whale-discover \
+  --window None --depth 500 --top 25 \
+  --min-trades 10 --min-wr 70 --min-volume 300000 \
+  --alert-new
+StandardOutput=append:/opt/polymarket/logs/whale-discover.log
+StandardError=append:/opt/polymarket/logs/whale-discover.log
+TimeoutStartSec=5min
+
+MemoryMax=300M
+CPUQuota=50%
+
+NoNewPrivileges=true
+PrivateTmp=true

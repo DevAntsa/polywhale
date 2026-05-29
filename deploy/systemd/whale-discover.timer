@@ -1,0 +1,12 @@
+[Unit]
+Description=Weekly whale-discovery sweep — finds new candidates matching copy-trade criteria
+
+[Timer]
+# Every Sunday at 04:00 UTC. Sunday so the user has the week's data fresh
+# and can review Monday morning.
+OnCalendar=Sun *-*-* 04:00:00
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

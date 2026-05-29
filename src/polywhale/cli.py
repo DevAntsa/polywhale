@@ -986,6 +986,8 @@ def watchlist_risk_cmd(settings: Settings, wallet: str, flags: str) -> None:
               help="Show top-N ranked candidates.")
 @click.option("--auto-add", is_flag=True, default=False,
               help="Upsert candidates into whale_watchlist as candidate=1.")
+@click.option("--alert-new", is_flag=True, default=False,
+              help="Telegram-alert only the candidates not already in our watchlist.")
 @click.pass_obj
 def whale_discover_cmd(
     settings: Settings,
@@ -996,6 +998,7 @@ def whale_discover_cmd(
     min_volume: float,
     top: int,
     auto_add: bool,
+    alert_new: bool,
 ) -> None:
     """Scan Polymarket leaderboard for whales matching copy-trade criteria.
 
@@ -1057,6 +1060,36 @@ def whale_discover_cmd(
             conn.commit()
             click.echo(f"--- auto-add: {added} candidates upserted (active=0) ---")
             click.echo("Promote with: polywhale watchlist-add --wallet <ADDR>")
+        if alert_new:
+            from polywhale.telegram import send_message
+            known = {
+                r["wallet"]
+                for r in conn.execute("SELECT wallet FROM whale_watchlist")
+            }
+            new_cands = [c for c in cands[:top] if c.wallet.lower() not in known]
+            if not new_cands:
+                click.echo("--- alert-new: 0 new candidates (all already known) ---")
+            else:
+                lines = ["<b>WEEKLY WHALE DISCOVERY</b>", ""]
+                for i, c in enumerate(new_cands, 1):
+                    pseudo = c.pseudonym or "—"
+                    lines.append(
+                        f"<b>{i}. {pseudo}</b>  <code>{c.wallet[:14]}</code>\n"
+                        f"   WR {c.win_rate_pct:.1f}% • n={c.n_resolved} • "
+                        f"vol ${c.volume:,.0f} • port ${c.portfolio_value:,.0f}\n"
+                        f"   profit ${c.profit:+,.0f}"
+                    )
+                lines.append("")
+                lines.append("Add with <code>polywhale watchlist-add --wallet ...</code>")
+                if settings.telegram_bot_token and settings.telegram_chat_id:
+                    send_message(
+                        settings.telegram_bot_token,
+                        settings.telegram_chat_id,
+                        "\n".join(lines),
+                    )
+                    click.echo(f"--- alert-new: pushed {len(new_cands)} candidates ---")
+                else:
+                    click.echo("--- alert-new: telegram not configured ---")
     finally:
         conn.close()
 
