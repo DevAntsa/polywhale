@@ -7,10 +7,15 @@ from polywhale.db import connect, run_migrations
 from polywhale.whale_sizing import (
     CAP_PER_BET,
     EXPLORE_STAKE_PCT,
+    FEES_BY_CATEGORY,
     MAX_OPEN_POSITIONS,
     MAX_PORTFOLIO_DEPLOY_PCT,
+    category_from_slug,
     check_portfolio_guards,
     compute_kelly_stake,
+    fee_for_category,
+    maker_rebate_for_category,
+    round_trip_friction,
     whale_pnl_stats,
 )
 
@@ -206,3 +211,55 @@ def test_check_portfolio_guards_deployment_cap(tmp_path: Path) -> None:
         assert "portfolio_deploy_cap" in reason
     finally:
         conn.close()
+
+
+# Cycle 5 (fees research): per-category fees + maker rebate.
+
+def test_category_from_slug_routes_known_prefixes() -> None:
+    assert category_from_slug("nba-okc-sas-2026-05-28") == "sports"
+    assert category_from_slug("nfl-kc-buf") == "sports"
+    assert category_from_slug("atp-humbert-halys") == "sports"
+    assert category_from_slug("btc-100k-2026") == "crypto"
+    assert category_from_slug("iran-strike-may") == "geopolitics"
+    assert category_from_slug("weather-tornado-tx") == "weather"
+    assert category_from_slug("politics-senate-2026") == "politics"
+    assert category_from_slug(None) == "default"
+    assert category_from_slug("") == "default"
+
+
+def test_fee_for_category_matches_table() -> None:
+    assert fee_for_category("sports") == FEES_BY_CATEGORY["sports"]
+    assert fee_for_category("crypto") == FEES_BY_CATEGORY["crypto"]
+    assert fee_for_category("geopolitics") == 0.0
+    # Unknown category falls back to default.
+    assert fee_for_category("missing") == FEES_BY_CATEGORY["default"]
+
+
+def test_maker_rebate_for_category() -> None:
+    assert maker_rebate_for_category("sports") == 0.25
+    assert maker_rebate_for_category("crypto") == 0.20
+    assert maker_rebate_for_category("geopolitics") == 0.0
+
+
+def test_round_trip_friction_pure_taker_is_two_times_peak() -> None:
+    """Both legs taker on Sports → 2 x 0.0075 = 0.015 (1.5% round-trip)."""
+    rt = round_trip_friction("sports", entry_is_maker=False, exit_is_maker=False)
+    assert abs(rt - 2 * 0.0075) < 1e-9
+
+
+def test_round_trip_friction_full_maker_captures_rebate_both_sides() -> None:
+    """Both legs maker on Sports → 2 x 0.0075 x (1 - 0.25) = 0.01125 (1.125%)."""
+    rt = round_trip_friction("sports", entry_is_maker=True, exit_is_maker=True)
+    assert abs(rt - 2 * 0.0075 * 0.75) < 1e-9
+
+
+def test_round_trip_friction_split_maker_taker() -> None:
+    """Maker entry + taker exit on Sports → 0.0075 x 0.75 + 0.0075 = 0.013125."""
+    rt = round_trip_friction("sports", entry_is_maker=True, exit_is_maker=False)
+    assert abs(rt - (0.0075 * 0.75 + 0.0075)) < 1e-9
+
+
+def test_round_trip_friction_geopolitics_is_free_either_way() -> None:
+    """Geopolitics is fee-free as of 2026-03-30 rollout."""
+    assert round_trip_friction("geopolitics") == 0.0
+    assert round_trip_friction("geopolitics", entry_is_maker=True) == 0.0

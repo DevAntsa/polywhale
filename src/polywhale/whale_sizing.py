@@ -41,6 +41,43 @@ SHRINK_HIGH = 30                      # n ≥ this → full Kelly
 CAP_PER_BET = 0.05                   # max 5% bankroll per single bet (paper-tune)
 MAX_OPEN_POSITIONS = 25
 MAX_PORTFOLIO_DEPLOY_PCT = 0.50       # 50% of bankroll deployed at once (paper-tune)
+
+# Per-category Polymarket fees (Cycle 5 research, 2026-05-29).
+# Format: peak one-way taker fee at p=0.50. Round-trip is approximately 2x for
+# taker-taker execution. The fee scales by p(1-p) so it's smaller off the 50/50
+# line. Geopolitics is fee-free as of March 30, 2026 rollout.
+# Source: help.polymarket.com/articles/13364478, docs.polymarket.com/fees.
+FEES_BY_CATEGORY = {
+    "sports":      0.0075,
+    "politics":    0.01,
+    "finance":     0.01,
+    "tech":        0.01,
+    "mentions":    0.01,
+    "economics":   0.0125,
+    "culture":     0.0125,
+    "weather":     0.0125,
+    "crypto":      0.018,
+    "geopolitics": 0.0,
+    # Default / unknown category — use Sports as conservative baseline.
+    "default":     0.0075,
+}
+
+# Maker rebate as a fraction of taker fees, paid daily by Polymarket.
+# A maker on Sports captures 25% of the taker fee back, so effective maker-side
+# friction is approximately fee * (1 - rebate) ≈ 0 (depending on order matching).
+MAKER_REBATE_BY_CATEGORY = {
+    "sports":      0.25,
+    "politics":    0.25,
+    "finance":     0.25,
+    "tech":        0.25,
+    "mentions":    0.25,
+    "economics":   0.25,
+    "culture":     0.25,
+    "weather":     0.25,
+    "crypto":      0.20,
+    "geopolitics": 0.0,
+    "default":     0.25,
+}
 MAX_CATEGORY_DEPLOY_PCT = 0.25        # 25% of bankroll per category
 
 
@@ -52,6 +89,64 @@ class SizingResult:
     kelly_raw: float | None  # unshrunk Kelly fraction (for diagnostics)
     sample_size: int
     skipped: bool = False    # True if portfolio guards rejected it
+
+
+def category_from_slug(slug: str | None) -> str:
+    """Map a Polymarket market slug to one of FEES_BY_CATEGORY's keys.
+
+    Conservative default: anything we can't classify falls into 'default'
+    which uses the Sports fee schedule (0.75% peak).
+    """
+    if not slug:
+        return "default"
+    head = slug.split("-", 1)[0].lower()
+    sport_heads = {"nba", "nfl", "mlb", "nhl", "atp", "wta", "soccer",
+                   "epl", "champions", "ucl", "tennis", "ufc", "mma",
+                   "golf", "f1", "sport", "sports"}
+    if head in sport_heads:
+        return "sports"
+    if head in {"btc", "eth", "crypto", "sol", "doge", "altcoin"}:
+        return "crypto"
+    if head in {"politics", "election", "potus", "senate", "house",
+                "trump", "biden", "harris", "vance"}:
+        return "politics"
+    if head in {"weather", "hurricane", "tornado", "rainfall"}:
+        return "weather"
+    if head in {"iran", "russia", "ukraine", "israel", "china",
+                "geopolitics", "war"}:
+        return "geopolitics"
+    return "default"
+
+
+def fee_for_category(category: str) -> float:
+    """Look up the peak one-way taker fee for a category."""
+    return FEES_BY_CATEGORY.get(category, FEES_BY_CATEGORY["default"])
+
+
+def maker_rebate_for_category(category: str) -> float:
+    """Look up the maker-side rebate fraction (% of taker fee captured)."""
+    return MAKER_REBATE_BY_CATEGORY.get(
+        category, MAKER_REBATE_BY_CATEGORY["default"],
+    )
+
+
+def round_trip_friction(
+    category: str,
+    *,
+    entry_is_maker: bool = False,
+    exit_is_maker: bool = False,
+) -> float:
+    """Effective round-trip friction for a copy trade given execution mode.
+
+    Both legs taker → 2 x peak fee.
+    One leg maker → peak fee + peak fee * (1 - rebate).
+    Both legs maker → 2 x peak fee * (1 - rebate).
+    """
+    fee = fee_for_category(category)
+    rebate = maker_rebate_for_category(category)
+    entry_cost = fee * (1 - rebate) if entry_is_maker else fee
+    exit_cost = fee * (1 - rebate) if exit_is_maker else fee
+    return entry_cost + exit_cost
 
 
 def whale_pnl_stats(
