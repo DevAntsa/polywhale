@@ -930,15 +930,20 @@ def whale_review_cmd(
               help="Endorsement source (e.g. 'polymarket-26-list', 'verified-public-handle').")
 @click.option("--risk-flags", default=None,
               help="Optional risk tag (e.g. 'insider-cluster', 'high-variance').")
+@click.option("--specialty", default=None,
+              help="Polymarket-26-list category (Politics, Sports, Weather, Culture, Technology).")
 @click.pass_obj
 def watchlist_endorse_cmd(
-    settings: Settings, wallet: str, source: str, risk_flags: str | None,
+    settings: Settings, wallet: str, source: str,
+    risk_flags: str | None, specialty: str | None,
 ) -> None:
     """Mark a wallet as endorsed (exempt from auto-drop)."""
     conn = connect(settings.db_path)
     try:
         run_migrations(conn)
-        ok = mark_endorsed(conn, wallet, source=source, risk_flags=risk_flags)
+        ok = mark_endorsed(
+            conn, wallet, source=source, risk_flags=risk_flags, specialty=specialty,
+        )
         click.echo(f"watchlist-endorse {wallet}: {'ok' if ok else 'wallet not found'}")
     finally:
         conn.close()

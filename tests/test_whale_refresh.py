@@ -9,6 +9,7 @@ from polywhale.whale_refresh import (
     deactivate,
     load_active_watchlist,
     mark_dormant_auto,
+    mark_endorsed,
     refresh_watchlist,
     seed_from_static,
     upsert_manual,
@@ -274,5 +275,52 @@ def test_upsert_manual_reactivates_existing(tmp_path: Path) -> None:
         ).fetchone()
         assert row["active"] == 1
         assert row["label"] == "first"  # preserved
+    finally:
+        conn.close()
+
+
+def test_mark_endorsed_records_specialty(tmp_path: Path) -> None:
+    """Cycle 1 (identity research): polymarket-26-list endorsement carries
+    the wallet's named specialty (Politics / Sports / Weather / etc.) so we
+    can detect lane drift later. mark_endorsed should persist it."""
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        upsert_manual(conn, wallet="0xpolitics", label="cowcat")
+        ok = mark_endorsed(
+            conn,
+            "0xpolitics",
+            source="polymarket-26-list",
+            specialty="Politics",
+        )
+        assert ok is True
+        row = conn.execute(
+            "SELECT endorsed, endorsement_source, polymarket_specialty "
+            "FROM whale_watchlist WHERE wallet = '0xpolitics'"
+        ).fetchone()
+        assert row["endorsed"] == 1
+        assert row["endorsement_source"] == "polymarket-26-list"
+        assert row["polymarket_specialty"] == "Politics"
+    finally:
+        conn.close()
+
+
+def test_mark_endorsed_specialty_none_keeps_existing(tmp_path: Path) -> None:
+    """Re-endorsing without specifying specialty should NOT clear it (COALESCE)."""
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        upsert_manual(conn, wallet="0xkeep")
+        mark_endorsed(
+            conn, "0xkeep", source="polymarket-26-list", specialty="Weather",
+        )
+        # Re-endorse with a different source but no specialty
+        mark_endorsed(conn, "0xkeep", source="verified-handle")
+        row = conn.execute(
+            "SELECT endorsement_source, polymarket_specialty "
+            "FROM whale_watchlist WHERE wallet = '0xkeep'"
+        ).fetchone()
+        assert row["endorsement_source"] == "verified-handle"
+        assert row["polymarket_specialty"] == "Weather"  # preserved
     finally:
         conn.close()

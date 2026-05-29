@@ -351,12 +351,19 @@ def mark_endorsed(
     *,
     source: str,
     risk_flags: str | None = None,
+    specialty: str | None = None,
 ) -> bool:
-    """Mark a wallet as officially endorsed (exempt from auto-drop)."""
+    """Mark a wallet as officially endorsed (exempt from auto-drop).
+
+    The optional `specialty` records the wallet's Polymarket-26-list category
+    (Politics, Sports, Weather, etc.) so we can detect lane drift later.
+    """
     cur = conn.execute(
         "UPDATE whale_watchlist SET endorsed = 1, endorsement_source = ?, "
-        "risk_flags = COALESCE(?, risk_flags) WHERE wallet = ?",
-        (source, risk_flags, wallet.lower()),
+        "risk_flags = COALESCE(?, risk_flags), "
+        "polymarket_specialty = COALESCE(?, polymarket_specialty) "
+        "WHERE wallet = ?",
+        (source, risk_flags, specialty, wallet.lower()),
     )
     conn.commit()
     return cur.rowcount > 0
