@@ -7,10 +7,20 @@ from pathlib import Path
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
-def connect(db_path: Path) -> sqlite3.Connection:
-    """Open a connection with WAL mode, foreign keys on, Row factory."""
+def connect(
+    db_path: Path,
+    *,
+    check_same_thread: bool = True,
+) -> sqlite3.Connection:
+    """Open a connection with WAL mode, foreign keys on, Row factory.
+
+    Set check_same_thread=False for daemons (whale-ws) that need to share
+    one connection across an asyncio event loop + worker threads. WAL mode
+    makes this safe for our concurrent read + occasional serialized write
+    pattern.
+    """
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, check_same_thread=check_same_thread)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA foreign_keys = ON")

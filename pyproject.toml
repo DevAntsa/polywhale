@@ -6,10 +6,11 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "DevAntsa" }]
-keywords = ["polymarket", "prediction-markets", "arbitrage", "copy-trading", "whale-tracking"]
+keywords = ["polymarket", "prediction-markets", "copy-trading", "whale-tracking"]
 dependencies = [
     "httpx>=0.27",
     "click>=8.1",
+    "websockets>=13",
 ]
 
 [project.scripts]

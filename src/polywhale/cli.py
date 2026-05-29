@@ -972,6 +972,51 @@ def watchlist_risk_cmd(settings: Settings, wallet: str, flags: str) -> None:
         conn.close()
 
 
+@cli.command(name="whale-ws")
+@click.option(
+    "--no-alerts", is_flag=True, default=False,
+    help="Detect signals + place copy bets but don't push Telegram alerts.",
+)
+@click.option(
+    "--no-copy", is_flag=True, default=False,
+    help="Detect signals only — don't auto-place paper copy bets.",
+)
+@click.pass_obj
+def whale_ws_cmd(settings: Settings, no_alerts: bool, no_copy: bool) -> None:
+    """Long-running WebSocket daemon: react to CLOB trade events within ~1s
+    and trigger whale snapshots only for whales who hold the traded asset.
+
+    Run alongside the 15s whale-fast timer — this catches most fills fast,
+    the timer is a safety net for missed events and post-reconnect catchup.
+    """
+    import asyncio
+
+    from polywhale.poly_ws import listen_market_events
+    from polywhale.ws_dispatcher import WhaleSnapshotDispatcher
+
+    # Daemon shares the connection across the asyncio loop + snapshot worker
+    # threads; WAL mode + check_same_thread=False makes that safe.
+    conn = connect(settings.db_path, check_same_thread=False)
+    try:
+        run_migrations(conn)
+        with PolymarketClient() as client:
+            dispatcher = WhaleSnapshotDispatcher(
+                conn,
+                client,
+                bankroll_usd=settings.paper_bankroll_usd,
+                stake_pct=settings.paper_stake_pct,
+                send_alerts=not no_alerts,
+                place_copy_bets=not no_copy,
+            )
+            click.echo("=== whale-ws daemon starting ===")
+            try:
+                asyncio.run(listen_market_events(conn, dispatcher.on_trade))
+            except KeyboardInterrupt:
+                click.echo("whale-ws shutting down")
+    finally:
+        conn.close()
+
+
 @cli.command(name="maker-routing-report")
 @click.pass_obj
 def maker_routing_report_cmd(settings: Settings) -> None:
