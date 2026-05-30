@@ -1,5 +1,9 @@
 <div align="center">
 
+<img src="assets/banner.png" alt="polywhale — copy-trading intelligence for Polymarket whales" width="100%">
+
+<br><br>
+
 # 🐋 polywhale
 
 ### Copy-trading intelligence for Polymarket whales
