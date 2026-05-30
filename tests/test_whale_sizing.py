@@ -269,12 +269,12 @@ def test_round_trip_friction_geopolitics_is_free_either_way() -> None:
 
 # poly-23: per-category friction wired into sizing + per-category deploy cap.
 
-def test_expected_sizing_friction_is_maker_first_per_category() -> None:
-    """Sizing friction = maker-first round-trip, differing by category."""
-    # Sports: 2 * 0.0075 * (1 - 0.25) = 0.01125
-    assert abs(expected_sizing_friction("sports") - 0.01125) < 1e-9
-    # Crypto: 2 * 0.018 * (1 - 0.20) = 0.0288 — clearly stricter than Sports.
-    assert abs(expected_sizing_friction("crypto") - 0.0288) < 1e-9
+def test_expected_sizing_friction_is_taker_per_category() -> None:
+    """Sizing friction = per-category taker round-trip (0% maker fills observed)."""
+    # Sports taker: 2 * 0.0075 = 0.015
+    assert abs(expected_sizing_friction("sports") - 0.015) < 1e-9
+    # Crypto taker: 2 * 0.018 = 0.036 — clearly stricter than Sports.
+    assert abs(expected_sizing_friction("crypto") - 0.036) < 1e-9
     assert expected_sizing_friction("crypto") > expected_sizing_friction("sports")
     # Geopolitics is fee-free → zero friction, so marginal-edge whales survive.
     assert expected_sizing_friction("geopolitics") == 0.0

@@ -176,9 +176,10 @@ def place_copy_bet(
     conviction_f = float(conviction) if conviction is not None else 1.0
     conv_mult = conviction_f if weight_by_conviction else 1.0
 
-    # Per-category friction (Cycle 5): size on the maker-first round-trip
-    # friction for THIS market's category instead of a blanket 1.5%. Geopolitics
-    # is fee-free; Crypto is ~2x Sports. See whale_sizing.expected_sizing_friction.
+    # Per-category friction (Cycle 5): size on this market's category friction
+    # instead of a blanket 1.5%. Geopolitics is fee-free; Crypto is ~2.4x Sports.
+    # Taker-based until the shadow shows real maker fills — see
+    # whale_sizing.expected_sizing_friction.
     category = category_from_slug(market_slug)
     fees_rt = expected_sizing_friction(category)
 

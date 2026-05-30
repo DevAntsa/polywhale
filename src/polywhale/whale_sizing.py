@@ -149,22 +149,31 @@ def round_trip_friction(
     return entry_cost + exit_cost
 
 
+# Whether to size as if we capture the maker rebate. Kept FALSE because the
+# maker-routing shadow observer (maker_router) reports a ~0% maker-fill rate as of
+# 2026-05-30 — every maker attempt falls back to taker, so we capture no rebate.
+# Sizing on the rebate we don't earn would be optimistic. Flip to True once the
+# shadow shows a meaningful maker-fill rate, then re-validate.
+SIZE_ON_MAKER_FIRST = False
+
+
 def expected_sizing_friction(category: str) -> float:
-    """Round-trip friction to size Kelly on, given our maker-first routing.
+    """Round-trip friction to size Kelly on, per category.
 
-    We route maker-first (see maker_router): the default path posts a limit
-    order and only crosses to taker on time-critical signals or no-fill. So we
-    size on the maker-first round-trip friction for the trade's category instead
-    of a blanket 1.5%. This is the Cycle 5 "switch from blanket to per-category /
-    per-leg" change — it stops penalizing fee-free Geopolitics whales for phantom
-    friction and correctly tightens on high-fee categories like Crypto.
+    This is the Cycle 5 "switch from a blanket 1.5% to per-category / per-leg"
+    change: Geopolitics is fee-free (0%), Crypto is ~3.6% vs Sports 1.5%. It stops
+    penalizing fee-free whales for phantom friction and correctly tightens on
+    high-fee categories.
 
-    Not over-optimistic: round_trip_friction already models a maker leg
-    conservatively as fee*(1-rebate) (not the ~0 a real resting maker pays). The
-    shadow observer (maker_router) measures *realized* friction and maker-fill
-    rate; if fills prove unreliable we flip this to the taker assumption.
+    We use TAKER friction (SIZE_ON_MAKER_FIRST=False) because the shadow observer
+    currently sees ~0% maker fills — assuming the maker rebate in sizing would be
+    optimistic until those fills actually materialize.
     """
-    return round_trip_friction(category, entry_is_maker=True, exit_is_maker=True)
+    return round_trip_friction(
+        category,
+        entry_is_maker=SIZE_ON_MAKER_FIRST,
+        exit_is_maker=SIZE_ON_MAKER_FIRST,
+    )
 
 
 def whale_pnl_stats(
