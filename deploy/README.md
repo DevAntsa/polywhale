@@ -1,6 +1,6 @@
-# Polymarket bot — Hetzner deploy
+﻿# Polymarket bot â€” Hetzner deploy
 
-**Approved 2026-05-27** by the Hetzner manager. Co-hosted with existing trading services on the same box at `$SERVER`. Poly footprint is small enough (~260 MB peak RAM, ~6 GB/year disk, idle CPU) that isolation isn't needed — but **hard isolation rules** still apply because the trading services are production-critical.
+Runs on a small ARM VPS, optionally co-hosted with other services. Poly footprint is small enough (~260 MB peak RAM, ~6 GB/year disk, idle CPU) that isolation isn't needed â€” but **hard isolation rules** still apply when sharing a box with anything production-critical. Set `$SERVER` to your host before running the commands below.
 
 ## Hard rules (do not violate)
 
@@ -8,35 +8,35 @@
 2. **Never** use the conda `tflow` env. Poly has its own venv at `/opt/polymarket/venv`.
 3. **Never** restart `devantsa-loop`, `devantsa-loop-acct2`, or `devantsa-liq`.
 4. **Never** touch `/etc/systemd/system/devantsa-*.service`. Poly units use `poly-` or `whale-` prefixes.
-5. After every phase: `systemctl is-active devantsa-loop devantsa-loop-acct2 devantsa-liq` — all 3 must remain `active`. If any flips, STOP.
+5. After every phase: `systemctl is-active devantsa-loop devantsa-loop-acct2 devantsa-liq` â€” all 3 must remain `active`. If any flips, STOP.
 6. If anything looks wrong: `/opt/polymarket/disable_all.sh` and report.
 
 ## Layout on the box
 
 ```
 /opt/polymarket/
-├── app/                   git checkout of polywhale
-├── venv/                  dedicated Python venv
-├── data/                  SQLite database (polywhale.sqlite)
-├── logs/                  per-service log files
-├── disable_all.sh         rollback / kill switch
-└── health_check.sh        poly-side health audit
+â”œâ”€â”€ app/                   git checkout of polywhale
+â”œâ”€â”€ venv/                  dedicated Python venv
+â”œâ”€â”€ data/                  SQLite database (polywhale.sqlite)
+â”œâ”€â”€ logs/                  per-service log files
+â”œâ”€â”€ disable_all.sh         rollback / kill switch
+â””â”€â”€ health_check.sh        poly-side health audit
 ```
 
 Systemd units installed at `/etc/systemd/system/{poly,whale}-*.{service,timer}`.
 
 ---
 
-## Phase 0 — Pre-flight (always first)
+## Phase 0 â€” Pre-flight (always first)
 
 ```bash
 # 1) In Hetzner Console: snapshot the box.
-#    Servers → [box] → Snapshots → Create Snapshot
+#    Servers â†’ [box] â†’ Snapshots â†’ Create Snapshot
 #    Name: pre-poly-deploy-2026-05-27
 #    Wait for "Healthy" before continuing.
 
 # 2) SSH in and capture pre-state for diff:
-ssh root@$SERVER
+ssh root@"$SERVER"
 mkdir -p /root/deploy_snapshots/2026-05-27_pre_poly
 systemctl list-units --type=service --state=running > /root/deploy_snapshots/2026-05-27_pre_poly/services_before.txt
 df -h / > /root/deploy_snapshots/2026-05-27_pre_poly/disk_before.txt
@@ -47,7 +47,7 @@ systemctl is-active devantsa-loop devantsa-loop-acct2 devantsa-liq
 # Expected: active, active, active
 ```
 
-## Phase 1 — Install
+## Phase 1 â€” Install
 
 ```bash
 # All commands assume you're root on the Hetzner box.
@@ -81,7 +81,7 @@ polywhale poly-whales | tee /opt/polymarket/logs/smoke_test_$(date +%Y%m%d_%H%M%
 # Verify it pulled the leaderboard and printed sharps.
 ```
 
-## Phase 2 — Install systemd units
+## Phase 2 â€” Install systemd units
 
 ```bash
 # Copy unit files into systemd.
@@ -90,11 +90,11 @@ cp /opt/polymarket/app/deploy/systemd/*.timer /etc/systemd/system/
 systemctl daemon-reload
 ```
 
-## Phase 3 — Arm timers one at a time (with gate)
+## Phase 3 â€” Arm timers one at a time (with gate)
 
 Bring up sequentially, verifying trading stays healthy between each.
 
-`whale-fast` (60s cadence) supersedes `whale-watch` (30 min) + `whale-signals` (90 min) — it does
+`whale-fast` (60s cadence) supersedes `whale-watch` (30 min) + `whale-signals` (90 min) â€” it does
 snapshot + diff + Telegram alert in one tight pass so we copy whales before other bots front-run us.
 On a fresh deploy, enable `whale-fast` only; leave the slow pair disabled.
 
@@ -119,7 +119,7 @@ systemctl disable --now whale-watch.timer whale-signals.timer
 systemctl enable --now whale-fast.timer
 ```
 
-## Phase 4 — Health audit
+## Phase 4 â€” Health audit
 
 ```bash
 chmod +x /opt/polymarket/app/deploy/health_check.sh
@@ -132,7 +132,7 @@ Output should show:
 - Log files fresh (whale-fast in particular should be <2 min old)
 - No `ERROR` or `Traceback` lines in last 100 of any log
 
-## Phase 5 — Verify rollback works
+## Phase 5 â€” Verify rollback works
 
 ```bash
 cp /opt/polymarket/app/deploy/disable_all.sh /opt/polymarket/
