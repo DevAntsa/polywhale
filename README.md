@@ -27,6 +27,14 @@ polywhale watches those wallets, reacts to their fills in **~1 second**, and mir
 
 Nothing ships to real money until a **walk-forward backtest** says the edge is real out-of-sample.
 
+<div align="center">
+
+<img src="assets/walkforward.png" alt="Walk-forward validation: per-window out-of-sample PnL with cumulative overlay" width="90%">
+
+<sub>Rolling train→test walk-forward over reconstructed position episodes — whales are ranked on each training window, then followed blindly on the next unseen one. Concentrated in two windows; small sample, shown for transparency.</sub>
+
+</div>
+
 ---
 
 ## ⚡ How it works
@@ -128,6 +136,14 @@ Most "trading bots" report a single backtest number. polywhale treats validation
 
 > The headline finding so far: gross signal edge is real, but **friction is the binding constraint** — which is exactly why maker-side routing is the lead optimization.
 
+<div align="center">
+
+<img src="assets/paper_pnl.png" alt="Cumulative realized paper PnL across settled copy trades" width="90%">
+
+<sub>Cumulative <b>paper</b> PnL across settled copy trades. This is a transparency artifact, not a performance claim — the sample is small, simulated, and pre-friction; it exists to show the validation loop is live, not to project returns.</sub>
+
+</div>
+
 ---
 
 ## 🛠️ Engineering
@@ -157,12 +173,11 @@ Most "trading bots" report a single backtest number. polywhale treats validation
 
 ## 🛰️ Low-latency detection
 
-```
-Detection latency
-  polling only ............ 60–90 s
-  + tightened timer ....... 10–15 s
-  + WebSocket push ........ ~1–3 s   ◀ current
-```
+<div align="center">
+
+<img src="assets/latency.png" alt="Detection latency reduction across polling, timer, and WebSocket stages" width="90%">
+
+</div>
 
 A single persistent connection subscribes to every market the tracked whales hold; any trade event triggers a **targeted** re-snapshot of only the wallets exposed to that market, then runs the diff → size → mirror pipeline in one reactive pass.
 
