@@ -1,260 +1,199 @@
-<p align="center">
-  <img src="assets/banner.png" alt="polywhale" width="850">
-</p>
+<div align="center">
 
-<p align="center">
-  <strong>Truth is liquid. Bet on everything.</strong>
-</p>
+# 🐋 polywhale
 
-<p align="center">
-  <img src="https://img.shields.io/badge/status-live%20on%20production-success" alt="status">
-  <img src="https://img.shields.io/badge/tests-54%20passing-brightgreen" alt="tests">
-  <img src="https://img.shields.io/badge/python-3.11+-blue?logo=python&logoColor=white" alt="python">
-  <img src="https://img.shields.io/badge/venue-Polymarket-7c3aed" alt="polymarket">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="license"></a>
-</p>
+### Copy-trading intelligence for Polymarket whales
 
----
+*Track the sharpest wallets on Polymarket, detect their moves within seconds, and mirror them with variance-adjusted position sizing — all validated with walk-forward backtesting before a cent of real money is risked.*
 
-## What this is
+<br>
 
-**polywhale** is a sharp-money detection and arbitrage bot for [Polymarket](https://polymarket.com), the decentralized prediction market on Polygon. It does three things:
+[![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Tests](https://img.shields.io/badge/tests-217%20passing-2ea44f?logo=pytest&logoColor=white)](#-engineering)
+[![Lint](https://img.shields.io/badge/ruff-clean-261230?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
+[![Async](https://img.shields.io/badge/asyncio-websockets-1f6feb)](#-low-latency-detection)
+[![Deploy](https://img.shields.io/badge/deploy-systemd%20%2F%20Hetzner-EE0000?logo=systemd&logoColor=white)](#-deployment)
+[![Status](https://img.shields.io/badge/status-paper--trading%20validation-yellow)](#-honest-status)
 
-1. **Identifies the small group of wallets that consistently win** on Polymarket and surfaces their new positions in real time via Telegram so you can follow their trades.
-2. **Detects mathematical arbitrage** across negative-risk event groups (FIFA World Cup, NBA Champion, presidential nominees) where the outcome prices temporarily sum to less than $1.
-3. **Paper-trades both signals against real prices** to measure edge before any real capital is deployed.
-
-All from public Polymarket APIs. No scraping, no anti-bot evasion, no ToS landmines.
+</div>
 
 ---
 
-## The unique insight
+## 🌊 The idea
 
-Most retail copy-trading bots assume *all profitable Polymarket wallets are worth copying*. They aren't. Two distinct archetypes show up on the leaderboard, and **only one of them has alpha you can capture**:
+A small number of Polymarket wallets are reliably profitable. The signal isn't *that* they win — it's that **their entries move the closing line in their direction** (positive CLV), the one statistic that actually predicts long-run edge.
 
-| Archetype | Margin (profit/volume) | What they do | Worth copying? |
-|---|---|---|---|
-| **Directional sharp** | >= 3% | Predicts outcomes accurately, holds positions to resolution | YES, picks have edge |
-| **Arb operator** | ~1% | Takes both sides of mispricings; profit = bid/ask spread | NO, copying one leg loses the hedge |
+polywhale watches those wallets, reacts to their fills in **~1 second**, and mirrors them as paper trades sized by **fractional Kelly** — while continuously measuring the real-money friction (fees + slippage) that decides whether the edge survives contact with the order book.
 
-polywhale's classifier separates them automatically using profit and volume from Polymarket's leaderboard API. The default watchlist tracks **15 confirmed sharps** combining our top-margin picks with a curated list from polywhaler.com's skill ranking.
+Nothing ships to real money until a **walk-forward backtest** says the edge is real out-of-sample.
 
 ---
 
-## Live demo
+## ⚡ How it works
 
-```text
-$ polywhale poly-whales
-Classified 50 wallet(s) over window=30d.
-  sharps=5  arb_ops=5  hybrids=1  unknown=39
-
-Top sharps (worth copying):
-  surfandturf               0x9f2f...2ca8  margin= 13.9%  profit=$ 2,971,286
-  bossoskil1                0xa5ea...d96a  margin=  4.9%  profit=$ 2,841,023   (MLB specialist)
-  VPenguin                  0xfbf3...b218  margin=  6.0%  profit=$ 1,628,257
-
-Top arb operators (DO NOT copy):
-  Countryside               0xbddf...c684  margin=  1.4%  profit=$ 1,686,735
-  swisstony                 0x204f...5e14  margin=  1.7%  profit=$ 1,893,974
-
-$ polywhale poly-arbs --event-slug 2026-fifa-world-cup-winner-595 --inspect-only
-Event: 2026-fifa-world-cup-winner-595
-  title          : 2026 FIFA World Cup Winner
-  neg-risk legs  : 48
-  sum(best_ask)  : 1.0640
-  raw edge       : -6.40%   (overround now; arb appears when sum drops below 1.00)
-
-$ polywhale pulse
-=== polywhale pulse ===
-  whales tracked       : 15
-  whale snapshots      : 4,720
-  whale signals        : 23
-  book snapshots       : 480
-  combo arbs detected  : 0
-  paper bets total     : 0  (settled: 0)
-  paper P&L            : $+0.00
+```mermaid
+flowchart LR
+    A[CLOB WebSocket<br/>push events] -->|~1s| D[Signal engine]
+    B[15s safety<br/>timer] --> D
+    C[Leaderboard<br/>discovery] --> W[(Whale<br/>watchlist)]
+    W --> D
+    D -->|open / add / trim / close| S[Position diff]
+    S --> K[Kelly sizing<br/>+ survival score]
+    K --> P[Paper copy bet]
+    P --> M[Maker-routing<br/>shadow model]
+    P --> F[Friction observer]
+    M & F --> V[Walk-forward<br/>+ Monte Carlo]
+    V --> R{Real-money<br/>go / no-go}
 ```
 
-When a sharp opens a new position, you get a Telegram message:
-
-```text
-NEW BET by whale 0xa5ea13a81d...
-  Yankees vs Red Sox
-  outcome: Yankees
-  size: 100,000
-  current price: 0.430
-```
-
----
-
-## Architecture
-
-```text
-                    +---------------------------------+
-                    |   Polymarket public REST APIs   |
-                    |  gamma · clob · data · lb       |
-                    +----------------+----------------+
-                                     |
-        +---------------+------------+------------+----------------+
-        v               v            v            v                v
-   book watcher    whale watcher  arb scanner  leaderboard    paper trader
-   (CLOB /book)    (data-api)     (gamma+CLOB) (lb-api)       (gamma resolve)
-        |               |            |            |                |
-        +---------------+------------+------------+----------------+
-                                     |
-                                     v
-                              +-------------+
-                              |   SQLite    |
-                              +------+------+
-                                     |
-              +----------------------+----------------------+
-              v                      v                      v
-        whale-diff           combo-arb detector       pulse / P&L
-        engine                                             dashboard
-              |
-              v
-        Telegram alerts
-```
-
-Single-file SQLite, `httpx` for sync I/O, `click` for CLI. No queues, no Kafka, no Redis. Runs on a 4 EUR/mo VPS.
+| Stage | What happens |
+|------|--------------|
+| **Discover** | Weekly sweep scans the Polymarket leaderboard, filters by win rate / volume / portfolio value, and surfaces fresh candidates to Telegram |
+| **Detect** | Dual-path detection — a persistent CLOB **WebSocket** daemon (sub-second) backed by a 15s polling safety net |
+| **Decide** | Each move is filtered by playbook archetype (skip the un-copyable ones) and sized with **¼-Kelly** shrunk for sample size |
+| **Mirror** | Recorded as a paper bet with VWAP entry, top-up handling, and per-whale conviction weighting |
+| **Measure** | A maker-routing shadow model + friction observer compute what *real-money* execution would have cost |
+| **Validate** | Rolling **walk-forward** windows and **Monte Carlo** bootstrap stress-test the edge before any capital is committed |
 
 ---
 
-## CLI surface
+## ✨ Highlights
 
-| Command | Purpose |
-|---|---|
-| `polywhale migrate` | Apply schema migrations |
-| `polywhale poly-whales` | Classify leaderboard wallets as sharp / arb_op / hybrid |
-| `polywhale poly-markets [--show-skew]` | List top Polymarket markets by 24h volume |
-| `polywhale poly-book --slug X` | Print order book depth for a market |
-| `polywhale poly-watch --default` | Poll order books for tracked markets |
-| `polywhale poly-arbs --event-slug X` | Scan a neg-risk event for combinatorial arbs |
-| `polywhale whale-snapshot --wallet X` | Pull a wallet's current open positions |
-| `polywhale whale-watch --default` | Poll multiple wallets on an interval |
-| `polywhale whale-signals --default --alert` | Diff snapshots and push Telegram alerts on new sharp positions |
-| `polywhale whale-fast --default --alert` | Snapshot + diff + alert in one fast pass (60s timer cadence) |
-| `polywhale poly-paper-combo --event-slug X` | Paper-bet a combo arb at current ask prices |
-| `polywhale poly-paper-bet --slug X --side YES --shares N` | Manual directional paper bet |
-| `polywhale poly-paper-settle` | Settle resolved paper bets via gamma + compute P&L |
-| `polywhale poly-paper-freeze --bet-id N --reason "..."` | Freeze a paper bet (e.g., during UMA dispute) so settlement skips it |
-| `polywhale poly-paper-unfreeze --bet-id N` | Clear the frozen flag |
-| `polywhale poly-paper-pulse` | Per-source P&L breakdown |
-| `polywhale backtest [--since-days N]` | Replay historical signals into synthetic bets; show per-whale P&L attribution |
-| `polywhale pulse` | At-a-glance status snapshot |
+- 🛰️ **Low-latency detection** — async `websockets` daemon reacts to live trade events on hundreds of markets; detection latency cut from ~90s to ~1–3s
+- 📐 **Fractional Kelly sizing** — per-whale stake from `f* = (μ − fees) / σ²`, shrunk toward an exploration stake until the sample is large enough to trust
+- 🧬 **Survival scoring** — wallets ranked on sample size, maker/taker share, category focus, recovery factor, and return skew (grounded in 2026 prediction-market research)
+- 🎭 **Archetype filtering** — structurally un-copyable playbooks (news-arb, insider, market-making) are detected and skipped
+- 💸 **Maker-routing shadow model** — simulates limit-order fills + maker rebates to quantify achievable friction reduction
+- 🔬 **Research-grade validation** — walk-forward, Monte Carlo, and a historical backtest engine that reconstructs position episodes from on-chain activity
+- 🤖 **Telegram command bot** — `/pulse`, `/whales`, `/positions`, `/pnl` for live status from your pocket
+- 🛡️ **Hardened deployment** — isolated systemd units with memory caps, WAL-mode SQLite, sequential migrations, zero shared state with neighbouring services
 
 ---
 
-## Quick start
+## 🚀 Quickstart
 
 ```bash
 git clone https://github.com/DevAntsa/polywhale.git
 cd polywhale
+pip install -e .
 
-# Install (Python 3.11+)
-python3 -m venv .venv
-source .venv/bin/activate              # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
-
-# Configure
-cp .env.example .env
-# Edit .env with Telegram bot token + chat ID (optional; only for --alert)
-
-# Initialize the database
-polywhale migrate
-
-# Take a first look
-polywhale poly-whales
-polywhale poly-markets --limit 10
-polywhale pulse
+polywhale migrate            # apply schema
+polywhale whale-discover     # find candidate whales from the leaderboard
+polywhale whale-fast --default --alert   # one detection pass
+polywhale pulse              # at-a-glance system health
 ```
 
----
+<details>
+<summary><b>📟 Full command catalogue</b></summary>
 
-## Production deployment
+<br>
 
-`deploy/` contains everything to run polywhale unattended on a VPS:
+**Detection & copy**
+| Command | Purpose |
+|---------|---------|
+| `whale-ws` | Persistent WebSocket daemon (push-driven, ~1s) |
+| `whale-fast` | One-shot snapshot → diff → alert (timer-driven) |
+| `whale-watch` | Poll multiple wallets on an interval |
+| `whale-signals` | Diff the last two snapshots into signals |
 
-- **`install.sh`** - idempotent bootstrap (venv, install, migrate, sanity checks)
-- **`systemd/*.service` + `*.timer`** - five timer-driven oneshot units with `MemoryMax=300M` + `CPUQuota=50%` so the bot can never starve other workloads
-- **`disable_all.sh`** - one-shot kill switch with zero impact on co-hosted services
-- **`health_check.sh`** - 4-stage audit (services, timer schedules, log freshness, error scan)
-- **`README.md`** - phased deploy guide with verify-gates after each step
+**Whale management**
+| Command | Purpose |
+|---------|---------|
+| `whale-discover` | Leaderboard sweep for new candidates |
+| `whale-survival` | Recompute survival scores + tiers |
+| `whale-review` | Score every whale, recommend keep/drop |
+| `watchlist` / `watchlist-add` / `watchlist-endorse` / `watchlist-archetype` | Curate the tracked set |
 
-Four timers handle the workload:
+**Validation & analytics**
+| Command | Purpose |
+|---------|---------|
+| `walk-forward` | Rolling train/test out-of-sample validation |
+| `monte-carlo` | Bootstrap-resampled PnL projection |
+| `historical-backfill` / `historical-backtest` | Reconstruct & replay position history |
+| `friction-report` | Slippage + paper-to-real edge retention |
+| `maker-routing-report` | Maker vs taker fill economics |
 
-| Timer | Cadence | What it does |
-|---|---|---|
-| `whale-fast` | 60 s | Whale snapshot + diff + Telegram alert (low-latency copy signal) |
-| `poly-watch` | 30 min | Order-book depth snapshots |
-| `poly-arbs` | 10 min | Combinatorial arb scan |
-| `poly-paper-settle` | daily 23:00 UTC | Settle resolved paper bets |
-
-Verified live on a co-hosted Hetzner CAX11 — ~260 MB peak RAM, ~6 GB/year disk, idle CPU.
-
----
-
-## Strategy notes
-
-**Why sharp-money detection and not just arbitrage?**
-
-Pure arbitrage on Polymarket is brutal: the simple YES + NO < $1 mispricings get picked off in seconds by latency-optimized bots running co-located on Polygon validators. Retail can't win that race.
-
-What retail *can* do is be patient. Two genuine retail-friendly opportunities exist:
-
-- **Slow combinatorial arbs.** In multi-outcome neg-risk groups (e.g. the 48 outcomes of "Who wins the World Cup?"), the sum across all YES tokens occasionally drifts below $1 during low-attention periods. Polywhale scans these continuously.
-- **Sharp-money copy signals.** A handful of wallets (5 or fewer in any given month) consistently beat the market. They're not unbeatable, they just make better predictions than the average bettor. Their new positions are leading indicators.
-
-The bet is that combining "the cheapest combinatorial arbs the fast bots miss" with "directional follow on sharps' new positions" produces a positive-edge portfolio at retail scale. The paper-trading layer measures this empirically before any real money moves.
+</details>
 
 ---
 
-## Project status
+## 🔬 Validation methodology
 
-- [x] **Whale classifier** - separates 15 sharps from the noise via margin-ranking
-- [x] **Position-diff detector** - Telegram alerts on new sharp moves
-- [x] **Combinatorial arb detection** - scans neg-risk event groups
-- [x] **Paper trading layer** - records would-be bets, settles via gamma, computes per-source P&L
-- [x] **Production deploy artifacts** - systemd timers, kill switch, 4-stage health audit
-- [x] **Live deployment** - running on Hetzner co-host since 2026-05-27
-- [ ] **Real execution** via `py-clob-client` (EIP-712 signed orders) - needs funded Polygon wallet
-- [ ] **Auto-refresh watchlist** weekly from leaderboard
-- [ ] **Backtesting harness** - replay historical book snapshots against detection logic
-- [ ] **Strategy attribution dashboard** - which signal source actually makes money
+Most "trading bots" report a single backtest number. polywhale treats validation as the product:
+
+- **Walk-forward** — whales are ranked on a *training* window, then followed blindly on the next *unseen* window; consistency across windows separates edge from luck.
+- **Monte Carlo** — bootstrap-resamples historical trade outcomes to map the distribution of plausible weekly returns, not just the mean.
+- **Friction-first** — gross edge is meaningless until netted against measured fees and slippage; the friction observer makes that cost explicit per trade.
+- **Adversarial research** — strategy assumptions are pressure-tested against academic literature and refuted when the data doesn't hold up.
+
+> The headline finding so far: gross signal edge is real, but **friction is the binding constraint** — which is exactly why maker-side routing is the lead optimization.
 
 ---
 
-## Tech stack
+## 🛠️ Engineering
 
-| Layer | Choice | Why |
-|---|---|---|
-| Language | Python 3.11+ | Ecosystem + type hints |
-| HTTP | `httpx` | Sync API with proper timeout handling |
-| CLI | `click` | Composable subcommands + auto-help |
-| Storage | SQLite (WAL mode) | Single-file, zero ops, sufficient for the volume |
-| Lint / format | `ruff` | Fast unified linter + formatter |
-| Tests | `pytest` | 54 tests covering math, persistence, mocking the four APIs |
-| Process supervision | `systemd` timers | Kernel-enforced resource caps + journalctl observability |
-| Alerts | Telegram Bot API | Free, push to phone, no infrastructure |
+<div align="center">
 
-No databases beyond SQLite. No message queues. No external orchestration. Designed to run on a single small VPS.
+| | |
+|---|---|
+| **Language** | Python 3.12, fully type-hinted |
+| **Tests** | 217 passing · `pytest` · ruff-clean |
+| **Modules** | 34 focused modules, single-responsibility |
+| **Storage** | SQLite (WAL) with 16 sequential migrations |
+| **Concurrency** | `asyncio` + bounded thread pools for parallel I/O |
+| **External** | `httpx`, `websockets`, Polymarket CLOB + data API |
+| **Deploy** | systemd timers & daemons on a €4/mo ARM VPS |
 
----
+</div>
 
-## Acknowledgments
+### Design choices worth noting
 
-- **Saguillo, Ghafouri, Kiffer, Suárez-Tangil (2025)**, *Unravelling the Probabilistic Forest* - empirical foundation showing ~$40M extracted in Polymarket arbs over 12 months, top 3 wallets earning $4.2M. The two-archetype classification (market rebalancing vs combinatorial) inspired the dual-track design here. ([arXiv](https://arxiv.org/abs/2508.03474))
-- **[Polymarket's developer docs](https://docs.polymarket.com)** - clean public APIs with no auth required for read access.
-- **[polywhaler.com](https://polywhaler.com)** - their leaderboard contributed 10 of the 15 default sharps in the watchlist (separately verified via the polymarket leaderboard API).
-
----
-
-## Disclaimer
-
-This software is for research and educational purposes. Prediction-market trading involves substantial risk, including total loss of principal. polywhale is **not financial advice**, and historical signals do not guarantee future returns. The author assumes no liability for any financial losses incurred from use of this code. Verify local regulations before using prediction markets in your jurisdiction.
+- **Idempotent, change-only writes** keep a high-cadence poller's disk growth bounded.
+- **Shadow-mode everything** — maker routing and friction run as observers first, so real-money behaviour is fully measured before it's enabled.
+- **TOCTOU-aware bankroll guard** is tracked as an explicit pre-real-money gate, not an afterthought.
+- **Hard service isolation** — every unit has a `MemoryMax` so the OOM killer can never take down a co-hosted neighbour.
 
 ---
 
-## License
+## 🛰️ Low-latency detection
 
-[MIT](LICENSE) - use freely, modify as you wish, attribute if you publish derivatives.
+```
+Detection latency
+  polling only ............ 60–90 s
+  + tightened timer ....... 10–15 s
+  + WebSocket push ........ ~1–3 s   ◀ current
+```
+
+A single persistent connection subscribes to every market the tracked whales hold; any trade event triggers a **targeted** re-snapshot of only the wallets exposed to that market, then runs the diff → size → mirror pipeline in one reactive pass.
+
+---
+
+## 📟 Deployment
+
+Runs unattended on a small ARM VPS via systemd:
+
+```
+whale-ws.service          persistent     WebSocket detection daemon
+whale-fast.timer          every 15s      safety-net detection pass
+telegram-poll.timer       every 30s      command bot
+whale-discover.timer      weekly         new-candidate sweep
+poly-paper-settle.timer   daily          settle resolved bets
+```
+
+Each unit is memory-capped and logs to its own file; deployment is a `git pull` + `pip install -e .` + `migrate`.
+
+---
+
+## ⚖️ Honest status
+
+polywhale is in the **paper-trading validation phase**. It does not place real-money orders. Realized and unrealized PnL shown by `pulse` are simulated. Sample sizes are still small, and the maker-routing + bankroll-safety work that gates real capital is in progress.
+
+This repository is a portfolio / research project. **Nothing here is financial advice.**
+
+---
+
+<div align="center">
+
+*Built with a healthy respect for friction, variance, and the difference between a backtest and a bank balance.*
+
+</div>
