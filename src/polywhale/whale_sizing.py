@@ -149,6 +149,24 @@ def round_trip_friction(
     return entry_cost + exit_cost
 
 
+def expected_sizing_friction(category: str) -> float:
+    """Round-trip friction to size Kelly on, given our maker-first routing.
+
+    We route maker-first (see maker_router): the default path posts a limit
+    order and only crosses to taker on time-critical signals or no-fill. So we
+    size on the maker-first round-trip friction for the trade's category instead
+    of a blanket 1.5%. This is the Cycle 5 "switch from blanket to per-category /
+    per-leg" change — it stops penalizing fee-free Geopolitics whales for phantom
+    friction and correctly tightens on high-fee categories like Crypto.
+
+    Not over-optimistic: round_trip_friction already models a maker leg
+    conservatively as fee*(1-rebate) (not the ~0 a real resting maker pays). The
+    shadow observer (maker_router) measures *realized* friction and maker-fill
+    rate; if fills prove unreliable we flip this to the taker assumption.
+    """
+    return round_trip_friction(category, entry_is_maker=True, exit_is_maker=True)
+
+
 def whale_pnl_stats(
     conn: sqlite3.Connection,
     wallet: str,
@@ -292,15 +310,18 @@ def check_portfolio_guards(
 ) -> tuple[bool, str]:
     """Apply portfolio-level guards: max positions, deployment cap, same-market dedup.
 
-    Category cap is not implemented here yet — needs a `category` field on bets.
+    When `category_proxy` is given, also enforce the per-category deployment cap
+    (Cycle 5): no single category may exceed MAX_CATEGORY_DEPLOY_PCT of bankroll.
+    Each open bet's category is derived on the fly from its market_slug, so no
+    schema change is needed.
     Returns (allowed, reason).
     """
-    open_row = conn.execute(
-        "SELECT COUNT(*) AS n, COALESCE(SUM(cost_usd), 0) AS deployed "
-        "FROM poly_paper_bets WHERE source = 'whale_copy' AND settled_at IS NULL"
-    ).fetchone()
-    open_n = int(open_row["n"] or 0)
-    deployed = float(open_row["deployed"] or 0)
+    open_rows = conn.execute(
+        "SELECT market_slug, cost_usd FROM poly_paper_bets "
+        "WHERE source = 'whale_copy' AND settled_at IS NULL"
+    ).fetchall()
+    open_n = len(open_rows)
+    deployed = sum(float(b["cost_usd"] or 0) for b in open_rows)
 
     if open_n >= MAX_OPEN_POSITIONS:
         return False, f"max_open_positions ({open_n} >= {MAX_OPEN_POSITIONS})"
@@ -311,6 +332,22 @@ def check_portfolio_guards(
             f"(deployed ${deployed:.2f} + ${proposed_stake:.2f} > "
             f"{MAX_PORTFOLIO_DEPLOY_PCT * 100:.0f}% of ${bankroll_usd:.0f})"
         )
+
+    # Per-category deployment cap: keep any single category ≤ 25% of bankroll
+    # so we don't pile the whole book into, say, MLB on a busy night.
+    if category_proxy:
+        cat_deployed = sum(
+            float(b["cost_usd"] or 0)
+            for b in open_rows
+            if category_from_slug(b["market_slug"]) == category_proxy
+        )
+        cat_cap = bankroll_usd * MAX_CATEGORY_DEPLOY_PCT
+        if cat_deployed + proposed_stake > cat_cap:
+            return False, (
+                f"category_deploy_cap "
+                f"({category_proxy}: ${cat_deployed:.2f} + ${proposed_stake:.2f} > "
+                f"{MAX_CATEGORY_DEPLOY_PCT * 100:.0f}% of ${bankroll_usd:.0f})"
+            )
 
     # Same-(market, side) dedup
     if market_slug and outcome:

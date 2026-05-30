@@ -8,11 +8,13 @@ from polywhale.whale_sizing import (
     CAP_PER_BET,
     EXPLORE_STAKE_PCT,
     FEES_BY_CATEGORY,
+    MAX_CATEGORY_DEPLOY_PCT,
     MAX_OPEN_POSITIONS,
     MAX_PORTFOLIO_DEPLOY_PCT,
     category_from_slug,
     check_portfolio_guards,
     compute_kelly_stake,
+    expected_sizing_friction,
     fee_for_category,
     maker_rebate_for_category,
     round_trip_friction,
@@ -263,3 +265,72 @@ def test_round_trip_friction_geopolitics_is_free_either_way() -> None:
     """Geopolitics is fee-free as of 2026-03-30 rollout."""
     assert round_trip_friction("geopolitics") == 0.0
     assert round_trip_friction("geopolitics", entry_is_maker=True) == 0.0
+
+
+# poly-23: per-category friction wired into sizing + per-category deploy cap.
+
+def test_expected_sizing_friction_is_maker_first_per_category() -> None:
+    """Sizing friction = maker-first round-trip, differing by category."""
+    # Sports: 2 * 0.0075 * (1 - 0.25) = 0.01125
+    assert abs(expected_sizing_friction("sports") - 0.01125) < 1e-9
+    # Crypto: 2 * 0.018 * (1 - 0.20) = 0.0288 — clearly stricter than Sports.
+    assert abs(expected_sizing_friction("crypto") - 0.0288) < 1e-9
+    assert expected_sizing_friction("crypto") > expected_sizing_friction("sports")
+    # Geopolitics is fee-free → zero friction, so marginal-edge whales survive.
+    assert expected_sizing_friction("geopolitics") == 0.0
+
+
+def test_kelly_friction_gates_marginal_whale(tmp_path: Path) -> None:
+    """A small, consistent edge survives at 0% friction but is dropped at high friction.
+
+    This is the whole point of per-category friction: a fee-free Geopolitics whale
+    keeps a thin edge that a blanket 1.5% (or Crypto's ~2.9%) would erase.
+    """
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        # 30 trades, per-dollar ~+0.0133 (20 at 0.015, 10 at 0.010), low variance.
+        for i in range(30):
+            _insert_closed(conn, wallet="0xthin", pnl=0.6 if i < 20 else 0.4)
+        free = compute_kelly_stake(conn, "0xthin", bankroll_usd=2000.0, fees_rt=0.0)
+        crypto = compute_kelly_stake(
+            conn, "0xthin", bankroll_usd=2000.0,
+            fees_rt=expected_sizing_friction("crypto"),
+        )
+        assert free.stake_usd > 0 and not free.skipped
+        assert crypto.skipped is True  # ~2.9% friction erases the thin edge
+    finally:
+        conn.close()
+
+
+def test_check_portfolio_guards_category_cap(tmp_path: Path) -> None:
+    """One category over MAX_CATEGORY_DEPLOY_PCT is rejected; other categories pass."""
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        bankroll = 2000.0
+        cap_usd = bankroll * MAX_CATEGORY_DEPLOY_PCT  # $500
+        # One open crypto bet just under the category cap.
+        conn.execute(
+            "INSERT INTO poly_paper_bets(source, market_slug, token_id, side, "
+            "entry_price, size_shares, cost_usd, placed_at) "
+            "VALUES ('whale_copy', 'btc-100k-2026', 't1', 'YES', 0.4, 100, ?, 1)",
+            (cap_usd - 20.0,),
+        )
+        conn.commit()
+        # Adding $30 of crypto would breach the 25% category cap.
+        ok, reason = check_portfolio_guards(
+            conn, proposed_stake=30.0, bankroll_usd=bankroll,
+            market_slug="eth-5k-2026", outcome="Yes", category_proxy="crypto",
+        )
+        assert ok is False
+        assert "category_deploy_cap" in reason
+        # The same $30 in a different (sports) category is fine — crypto exposure
+        # doesn't count against it.
+        ok2, _ = check_portfolio_guards(
+            conn, proposed_stake=30.0, bankroll_usd=bankroll,
+            market_slug="nba-okc-sas", outcome="Yes", category_proxy="sports",
+        )
+        assert ok2 is True
+    finally:
+        conn.close()
