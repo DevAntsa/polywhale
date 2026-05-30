@@ -3,6 +3,7 @@ from pathlib import Path
 
 from polywhale.copy_trader import (
     close_copy_bet,
+    copy_equity_drawdown,
     copy_trade_stats,
     find_closed_copy_bet_by_exit_signal,
     find_open_copy_bet_for_signal,
@@ -11,6 +12,17 @@ from polywhale.copy_trader import (
 )
 from polywhale.db import connect, run_migrations
 from polywhale.whale_sizing import EXPLORE_STAKE_PCT, MAX_PORTFOLIO_DEPLOY_PCT
+
+
+def _insert_settled(conn, *, pnl: float, settled_at: int, cost: float = 50.0) -> None:
+    """Insert a settled whale_copy bet directly (for drawdown-curve tests)."""
+    conn.execute(
+        "INSERT INTO poly_paper_bets(source, market_slug, token_id, side, "
+        "entry_price, size_shares, cost_usd, placed_at, settled_at, pnl_usd) "
+        "VALUES ('whale_copy', 'm', 't', 'YES', 0.5, 100, ?, 1, ?, ?)",
+        (cost, settled_at, pnl),
+    )
+    conn.commit()
 
 _BANKROLL = 2000.0
 _EXPLORE = _BANKROLL * EXPLORE_STAKE_PCT  # default explore stake
@@ -377,5 +389,90 @@ def test_copy_trade_stats_aggregates(tmp_path: Path) -> None:
         assert stats["wins"] == 1
         assert stats["losses"] == 1
         assert stats["win_rate_pct"] == 50.0
+    finally:
+        conn.close()
+
+
+# Max-drawdown kill switch (v1).
+
+def test_copy_equity_drawdown_no_trades(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        dd, peak, cur = copy_equity_drawdown(conn, 2000.0)
+        assert dd == 0.0
+        assert peak == 2000.0
+        assert cur == 2000.0
+    finally:
+        conn.close()
+
+
+def test_copy_equity_drawdown_from_peak(tmp_path: Path) -> None:
+    """Equity 2000 -> 2200 (peak) -> 2100 → drawdown ~4.5% off the peak."""
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        _insert_settled(conn, pnl=200.0, settled_at=10)
+        _insert_settled(conn, pnl=-100.0, settled_at=20)
+        dd, peak, cur = copy_equity_drawdown(conn, 2000.0)
+        assert abs(peak - 2200.0) < 1e-6
+        assert abs(cur - 2100.0) < 1e-6
+        assert abs(dd - (100.0 / 2200.0)) < 1e-6
+    finally:
+        conn.close()
+
+
+def test_kill_switch_halts_new_entries_at_max_drawdown(tmp_path: Path) -> None:
+    """A 50% realized drawdown halts new entries; nothing opens."""
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        # One -$1000 settled loss on a $2000 bankroll → 50% drawdown.
+        _insert_settled(conn, pnl=-1000.0, settled_at=10)
+        # A fresh entry signal that would normally open.
+        _insert_signal(conn, wallet="0xnew", asset_id="a1",
+                       signal_type="new_position", current_price=0.40)
+        res = process_copy_trades(conn, bankroll_usd=2000.0, stake_pct=0.02)
+        assert res["killed"] is True
+        assert res["drawdown_pct"] >= 50.0
+        assert res["opened"] == 0
+    finally:
+        conn.close()
+
+
+def test_kill_switch_still_allows_exits(tmp_path: Path) -> None:
+    """While killed, open positions can still be closed (exits not halted)."""
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        # Open a position BEFORE the drawdown trips.
+        entry = _insert_signal(conn, wallet="0xw", asset_id="a1",
+                               signal_type="new_position", current_price=0.40)
+        assert place_copy_bet(conn, _row(conn, entry), bankroll_usd=2000.0, stake_pct=0.02)
+        # Now force a 50% drawdown.
+        _insert_settled(conn, pnl=-1000.0, settled_at=10)
+        # An exit signal for that position.
+        _insert_signal(conn, wallet="0xw", asset_id="a1",
+                       signal_type="closed_position", current_price=0.55,
+                       new_size=0, old_size=100_000)
+        res = process_copy_trades(conn, bankroll_usd=2000.0, stake_pct=0.02)
+        assert res["killed"] is True
+        assert res["opened"] == 0      # new entry signal halted
+        assert res["closed"] >= 1      # but the exit went through
+    finally:
+        conn.close()
+
+
+def test_no_kill_when_drawdown_small(tmp_path: Path) -> None:
+    """A shallow drawdown does not trip the switch; entries proceed."""
+    conn = connect(tmp_path / "t.sqlite")
+    try:
+        run_migrations(conn)
+        _insert_settled(conn, pnl=-100.0, settled_at=10)  # 5% drawdown
+        _insert_signal(conn, wallet="0xnew", asset_id="a1",
+                       signal_type="new_position", current_price=0.40)
+        res = process_copy_trades(conn, bankroll_usd=2000.0, stake_pct=0.02)
+        assert res["killed"] is False
+        assert res["opened"] == 1
     finally:
         conn.close()

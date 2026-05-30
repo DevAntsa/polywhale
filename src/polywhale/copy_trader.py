@@ -45,6 +45,15 @@ logger = logging.getLogger(__name__)
 ENTRY_SIGNAL_TYPES = ("new_position", "added_size")
 EXIT_SIGNAL_TYPES = ("closed_position", "reduced_size")
 
+# Max-drawdown kill switch (v1 — a crude catastrophic backstop, deliberately a
+# placeholder for the data-confirmed statistical kill switch we'll build once we
+# have enough live settled trades to calibrate it). This is a BINARY halt, not
+# drawdown de-risking: we never trim bet size on a dip (that would cut profits),
+# we only stop opening NEW positions entirely if realized copy-equity falls this
+# far below its peak. Open positions keep being managed/closed. See
+# reference_risk_management_live_pilot in memory.
+KILL_MAX_DRAWDOWN_PCT = 0.50
+
 
 def current_deployed_usd(conn: sqlite3.Connection) -> float:
     """Sum of cost_usd across open whale_copy paper bets."""
@@ -53,6 +62,35 @@ def current_deployed_usd(conn: sqlite3.Connection) -> float:
         "WHERE source = 'whale_copy' AND settled_at IS NULL"
     ).fetchone()
     return float(row[0] or 0)
+
+
+def copy_equity_drawdown(
+    conn: sqlite3.Connection, bankroll_usd: float
+) -> tuple[float, float, float]:
+    """Current drawdown of the realized copy-equity curve from its peak.
+
+    Equity_t = bankroll + cumulative realized PnL through settled trade t (ordered
+    by settle time). Returns (drawdown_frac, peak_equity, current_equity).
+    drawdown_frac is 0.0 when there are no settled trades or equity is at a high.
+    Realized-only by design: it's robust (no dependence on unreliable
+    mark-to-market of open positions) and total open exposure is already bounded
+    by the deployment caps.
+    """
+    rows = conn.execute(
+        "SELECT pnl_usd FROM poly_paper_bets "
+        "WHERE source = 'whale_copy' AND settled_at IS NOT NULL "
+        "AND pnl_usd IS NOT NULL ORDER BY settled_at ASC, bet_id ASC"
+    ).fetchall()
+    equity = bankroll_usd
+    peak = bankroll_usd
+    for r in rows:
+        equity += float(r["pnl_usd"])
+        if equity > peak:
+            peak = equity
+    if peak <= 0:
+        return 0.0, peak, equity
+    drawdown = max(0.0, (peak - equity) / peak)
+    return drawdown, peak, equity
 
 
 def process_copy_trades(
@@ -81,9 +119,23 @@ def process_copy_trades(
     skipped_bankroll = 0
     realized_pnl = 0.0
     ai_calls = 0
+
+    # Max-drawdown kill switch: if realized copy-equity is >= KILL_MAX_DRAWDOWN_PCT
+    # below its peak, halt all NEW entries (exits still process below).
+    drawdown, peak_eq, cur_eq = copy_equity_drawdown(conn, bankroll_usd)
+    killed = drawdown >= KILL_MAX_DRAWDOWN_PCT
+    if killed:
+        logger.error(
+            "KILL SWITCH ACTIVE: copy drawdown %.1f%% >= %.0f%% "
+            "(peak=$%.2f current=$%.2f) — halting NEW entries; exits still managed",
+            drawdown * 100, KILL_MAX_DRAWDOWN_PCT * 100, peak_eq, cur_eq,
+        )
+
     for r in rows:
         sig = r["signal_type"]
         if sig in ENTRY_SIGNAL_TYPES:
+            if killed:
+                continue  # kill switch: no new positions while in max drawdown
             ai_advice = None
             if use_ai_advisor and ai_api_key:
                 try:
@@ -122,6 +174,8 @@ def process_copy_trades(
         "skipped_bankroll": skipped_bankroll,
         "realized_pnl": round(realized_pnl, 4),
         "ai_calls": ai_calls,
+        "killed": killed,
+        "drawdown_pct": round(drawdown * 100, 1),
     }
 
 

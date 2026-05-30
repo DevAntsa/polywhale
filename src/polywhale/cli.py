@@ -16,7 +16,12 @@ from polywhale.backtest import (
     synthesize_bets,
 )
 from polywhale.config import Settings
-from polywhale.copy_trader import copy_trade_stats, process_copy_trades
+from polywhale.copy_trader import (
+    KILL_MAX_DRAWDOWN_PCT,
+    copy_equity_drawdown,
+    copy_trade_stats,
+    process_copy_trades,
+)
 from polywhale.db import connect, run_migrations
 from polywhale.friction_observer import compute_friction_report
 from polywhale.historical_backfill import backfill_all_watchlist, backfill_wallet_activity
@@ -1635,6 +1640,15 @@ def pulse(settings: Settings) -> None:
             else f"  closed copy trades   : {ct['closed_positions']}"
         )
         click.echo(f"  realized copy P&L    : ${ct['realized_pnl']:+.2f}")
+        dd, peak_eq, cur_eq = copy_equity_drawdown(conn, settings.paper_bankroll_usd)
+        kill_tag = (
+            f"  🛑 KILL SWITCH ACTIVE (>= {KILL_MAX_DRAWDOWN_PCT * 100:.0f}%) — new entries halted"
+            if dd >= KILL_MAX_DRAWDOWN_PCT else ""
+        )
+        click.echo(
+            f"  copy drawdown        : {dd * 100:.1f}%  "
+            f"(peak ${peak_eq:.2f} → now ${cur_eq:.2f}){kill_tag}"
+        )
     finally:
         conn.close()
 
