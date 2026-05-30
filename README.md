@@ -13,7 +13,7 @@
 <br>
 
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-229%20passing-2ea44f?logo=pytest&logoColor=white)](#-engineering)
+[![Tests](https://img.shields.io/badge/tests-232%20passing-2ea44f?logo=pytest&logoColor=white)](#-engineering)
 [![Lint](https://img.shields.io/badge/ruff-clean-261230?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
 [![Async](https://img.shields.io/badge/asyncio-websockets-1f6feb)](#-low-latency-detection)
 [![Deploy](https://img.shields.io/badge/deploy-systemd%20%2F%20Hetzner-EE0000?logo=systemd&logoColor=white)](#-deployment)
@@ -157,7 +157,7 @@ Most "trading bots" report a single backtest number. polywhale treats validation
 | | |
 |---|---|
 | **Language** | Python 3.12, fully type-hinted |
-| **Tests** | 229 passing · `pytest` · ruff-clean |
+| **Tests** | 232 passing · `pytest` · ruff-clean |
 | **Modules** | 34 focused modules, single-responsibility |
 | **Storage** | SQLite (WAL) with 16 sequential migrations |
 | **Concurrency** | `asyncio` + bounded thread pools for parallel I/O |

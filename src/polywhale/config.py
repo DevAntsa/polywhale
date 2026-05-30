@@ -31,6 +31,7 @@ class Settings:
     openrouter_api_key: str
     ai_model: str
     use_ai_advisor: bool
+    alert_copy_only: bool
 
     @classmethod
     def load(cls, dotenv_path: Path | None = None) -> "Settings":
@@ -46,6 +47,9 @@ class Settings:
             openrouter_api_key=os.environ.get("OPENROUTER_API_KEY", ""),
             ai_model=os.environ.get("POLYWHALE_AI_MODEL", "anthropic/claude-haiku-4.5"),
             use_ai_advisor=os.environ.get("POLYWHALE_USE_AI_ADVISOR", "false").lower()
+            in ("true", "1", "yes"),
+            # Default: only notify on OUR copy trades, not the whale-activity firehose.
+            alert_copy_only=os.environ.get("POLYWHALE_ALERT_COPY_ONLY", "true").lower()
             in ("true", "1", "yes"),
         )
 

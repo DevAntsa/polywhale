@@ -291,6 +291,22 @@ def _format_multi(
     return f"{header}\n<pre>{body}</pre>{footer}"
 
 
+def _is_copy_relevant(conn: sqlite3.Connection, signal_id: int) -> bool:
+    """True if this signal produced one of OUR copy bets (an open or a close)."""
+    if conn.execute(
+        "SELECT 1 FROM poly_paper_bets "
+        "WHERE source = 'whale_copy' AND source_ref_id = ? LIMIT 1",
+        (signal_id,),
+    ).fetchone():
+        return True
+    if conn.execute(
+        "SELECT 1 FROM poly_paper_bets WHERE closed_by_signal_id = ? LIMIT 1",
+        (signal_id,),
+    ).fetchone():
+        return True
+    return False
+
+
 def send_signal_alerts(
     conn: sqlite3.Connection,
     *,
@@ -299,22 +315,44 @@ def send_signal_alerts(
     signal_types: tuple[str, ...] = ALL_SIGNAL_TYPES,
     wallets: tuple[str, ...] | None = None,
     sender: Sender | None = None,
+    copy_only: bool = False,
 ) -> dict:
-    """Send one Telegram message for unalerted signals; mark them alerted on success."""
+    """Send one Telegram message for unalerted signals; mark them alerted on success.
+
+    When copy_only=True, only signals that produced one of OUR copy bets (an open
+    via source_ref_id or a close via closed_by_signal_id) are included in the
+    message — the rest of the whale-activity firehose is suppressed. All unalerted
+    signals are marked alerted either way, because the alerted flag also gates copy
+    processing (process_copy_trades reads WHERE alerted_at IS NULL) and that must
+    stay idempotent.
+    """
     send = sender if sender is not None else send_message
     rows = find_unalerted_signals(conn, signal_types=signal_types, wallets=wallets)
     if not rows:
         return {"sent": False, "signals": 0, "reason": "no unalerted signals"}
-    labels = _wallet_labels(conn, list({r["wallet"] for r in rows}))
-    text = format_signal_alert(rows, labels=labels, conn=conn)
-    ok = send(token, chat_id, text)
-    if not ok:
-        return {"sent": False, "signals": len(rows), "reason": "telegram api failed"}
+
+    send_rows = rows
+    if copy_only:
+        send_rows = [r for r in rows if _is_copy_relevant(conn, r["signal_id"])]
+
+    if send_rows:
+        labels = _wallet_labels(conn, list({r["wallet"] for r in send_rows}))
+        text = format_signal_alert(send_rows, labels=labels, conn=conn)
+        ok = send(token, chat_id, text)
+        if not ok:
+            return {"sent": False, "signals": len(send_rows), "reason": "telegram api failed"}
+
     now = int(time.time())
     conn.executemany(
         "UPDATE whale_signals SET alerted_at = ? WHERE signal_id = ?",
         [(now, r["signal_id"]) for r in rows],
     )
     conn.commit()
-    logger.info("sent %d whale signal alert(s)", len(rows))
-    return {"sent": True, "signals": len(rows), "reason": "delivered"}
+    if send_rows:
+        logger.info(
+            "sent %d copy-trade alert(s); suppressed %d firehose signal(s)",
+            len(send_rows), len(rows) - len(send_rows),
+        )
+        return {"sent": True, "signals": len(send_rows), "reason": "delivered"}
+    logger.info("no copy-relevant signals; suppressed %d firehose alert(s)", len(rows))
+    return {"sent": False, "signals": 0, "reason": "no copy-relevant signals"}

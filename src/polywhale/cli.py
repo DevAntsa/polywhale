@@ -641,6 +641,7 @@ def whale_signals_cmd(
                     conn,
                     token=settings.telegram_bot_token,
                     chat_id=settings.telegram_chat_id,
+                    copy_only=settings.alert_copy_only,
                 )
                 if summary["sent"]:
                     click.echo(f"\nTelegram alert sent for {summary['signals']} signal(s).")
@@ -738,6 +739,7 @@ def whale_fast_cmd(
                     conn,
                     token=settings.telegram_bot_token,
                     chat_id=settings.telegram_chat_id,
+                    copy_only=settings.alert_copy_only,
                 )
                 if summary["sent"]:
                     click.echo(f"Telegram alert sent for {summary['signals']} signal(s).")
